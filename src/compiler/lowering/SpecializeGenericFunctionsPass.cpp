@@ -80,6 +80,24 @@ namespace {
         );
     }
 
+    std::string simplifyTypeName(Type type) {
+        switch (generality(type)) {
+            case 0: return "bool";
+            case 1: return "int8";
+            case 2: return "uint8";
+            case 3: return "int32";
+            case 4: return "uint32";
+            case 5: return "index";
+            case 6: return "int64";
+            case 7: return "uint64";
+            case 8: return "float";
+            case 9: return "double";
+            case 10: return "string";
+            case 11: return "unknown";
+            default: return "unknown";
+        }
+    }
+
     std::string uniqueSpecializedFuncName(const std::string &functionName, TypeRange inputTypes, ValueRange inputValues) {
         static unsigned functionUniqueId = 0;
         
@@ -92,11 +110,8 @@ namespace {
             auto type = std::get<0>(it.value());
             auto value = std::get<1>(it.value());
 
-            // Converting type to string
-            std::string typeStr;
-            llvm::raw_string_ostream typeStream(typeStr);
-            type.print(typeStream);
-            std::string typeName = typeStream.str();
+            // Converting type to a simplified string
+            std::string typeName = simplifyTypeName(type);
 
             // Converting value to string
             std::string valueStr;
