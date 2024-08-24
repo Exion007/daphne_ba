@@ -29,7 +29,10 @@
 #include <stdexcept>
 #include <string>
 #include <set>
+#include <vector>
 #include <unordered_map>
+
+#include <iostream>
 
 using namespace mlir;
 
@@ -82,22 +85,15 @@ namespace {
 
 
     std::string uniqueSpecializedFuncName(const std::string &functionName, TypeRange inputTypes, ValueRange inputValues) {
-        static unsigned functionUniqueId = 0;
-        
+        //static unsigned functionUniqueId = 0;
         // Creating an empty string to store the new unique specialized function name
         std::string name = functionName;
 
         // Iterating over types and values to use them
         for (auto it : llvm::enumerate(llvm::zip(inputTypes, inputValues))) {
-            auto index = it.index();
-            auto type = std::get<0>(it.value());
+            //auto index = it.index();
             auto value = std::get<1>(it.value());
 
-            // Converting type to string
-            std::string typeStr;
-            llvm::raw_string_ostream typeStream(typeStr);
-            type.print(typeStream);
-            std::string typeName = typeStream.str();
 
             // Converting value to string
             std::string valueStr;
@@ -106,9 +102,26 @@ namespace {
             std::string valueName = valueStream.str();
 
             // Append type and value to the general name
-            name += "-" + typeName + "=" + valueName;
+            //std::cout << name << " | " << valueName << std::endl;
+            name +=  valueName;
         }
-        return name;
+        std::string output = functionName + '(';
+        size_t pos = 0;
+        bool first = true;
+
+        // Loop through the string and find "value = "
+        while ((pos = name.find("value = ", pos)) != std::string::npos) {
+            if (!first) {
+                output += ",";
+            }
+            pos += 8; // Move position past "value = "
+            size_t end_pos = name.find(" ", pos);
+            output += name.substr(pos, end_pos - pos);
+            first = false;
+        }
+
+        output += ")";
+        return output;
     }
 
     /**
@@ -224,6 +237,11 @@ namespace {
         std::set<func::FuncOp> called;
         std::set<func::FuncOp> templateFunctions;
 
+        std::map<std::string, std::set<std::string>> callGraph;
+
+        std::set<std::string> recursionFuncs;
+        std::map<std::vector<std::string>, int> recursionCalls;
+
         const DaphneUserConfig& userConfig;
         std::shared_ptr<spdlog::logger> logger;
 
@@ -233,6 +251,95 @@ namespace {
         }
 
     private:
+        /**
+         * @brief Print the callgraph  -> Debugging Purposes!!     
+         */
+        void printCallGraph() {
+            for(const auto &entry : callGraph) {
+                std::string funcName = entry.first;
+                std::cout << funcName << " #!#!#calls:#!#!# ";
+                if(entry.second.empty()) {
+                    std::cout << "No functions";
+                } else {
+                    for (const std::string &calledFuncName : entry.second) {
+                        std::cout << calledFuncName << " ";
+                    }
+                }
+                std::cout << std::endl;
+            }
+            std::cout<<std::endl<<std::endl;
+        }
+
+        std::vector<std::string> getRecursiveCalls() {
+            std::vector<std::string> checkedFunctions;
+            std::vector<std::string> recursiveFunctions;
+            for (const auto &it : callGraph) {
+                // Use std::find to check if the function is in the checkedFunctions vector
+                if (std::find(checkedFunctions.begin(), checkedFunctions.end(), it.first) != checkedFunctions.end()) {
+                    recursiveFunctions.push_back(it.first);
+                } else {
+                    checkedFunctions.push_back(it.first);
+                }
+            }
+            return recursiveFunctions;
+        }
+
+        /**
+         * @brief Update the callGraph map
+         * @param func The specialized function
+         * @return Nothing (could return error code?) 
+         */
+        void updateCallGraph(func::FuncOp func) {
+            // Get the module containing this function
+            auto module = func->getParentOfType<ModuleOp>();
+
+            std::string funcName = func.getName().str();
+            size_t pos = funcName.find('(');
+            if (pos != std::string::npos) {
+                funcName =  funcName.substr(0, pos);    
+            }
+            //std::cout << "FUNCNAME DEBUG: " << funcName << std::endl;
+            // Initialize the entry for this function in the call graph if not already present
+            if (callGraph.find(funcName) == callGraph.end()) {
+                callGraph[funcName] = {};
+            } else {
+                // If it was initialized already, return immediately. Specialized functions always call the same!
+                std::cout << "RETURNING CAUSE " << funcName << " IS ALREADY INITIALIZED!" << std::endl;
+                return;
+            }
+            func.walk([&](Operation *op) {
+                // Check if the operation is a custom function call (e.g., "daphne.generic_call")
+                if (op->getName().getStringRef() == "daphne.generic_call") {
+                    if (auto calleeAttr = op->getAttrOfType<StringAttr>("callee")) {
+                        std::string calleeName = calleeAttr.getValue().str();
+                        
+                        // Extract the input types (operand types)
+                        TypeRange inputTypes = op->getOperandTypes();
+
+                        // Extract the input values (operands)
+                        ValueRange inputValues = op->getOperands();
+
+                        // Use the operation's name as the base function name
+
+                        // Generate the specialized function name
+                        std::string specializedName = uniqueSpecializedFuncName(calleeName , inputTypes, inputValues);
+                        size_t pos = specializedName.find('(');
+                        if (pos != std::string::npos) {
+                            specializedName =  specializedName.substr(0, pos);    
+                        }
+                        // Print the specialized function name
+                        callGraph[funcName].insert(specializedName);
+                    }
+                }
+            });
+            std::vector<std::string> recursiveFunctions = checkRecursionInCallGraph();
+            std::cout << "Recursive Functions: ";
+            for(auto it : recursiveFunctions) {
+                std::cout << it << " ";
+            }
+            std::cout << std::endl;
+        }
+
         /**
          * @brief Create a specialized version of the template function.
          * @param templateFunction The template function.
@@ -281,15 +388,15 @@ namespace {
             // TODO We could reuse it for other calls with the same constant (it's just more book-keeping effort).
             if(!insertedConst)
                 specializedVersions.insert({templateFunction.getSymName().str(), specializedFunc});
-
+            
+            updateCallGraph(inferTypesInFunction(specializedFunc));
+            printCallGraph();
             return inferTypesInFunction(specializedFunc);
         }
 
         /**
          * @brief Try to reuse an existing specialization for the given template function
-         * @param operandTypes Operand types of the call operation
-         * @param operands Operands of the call operation or an empty list if the operands are not available
-         * @param templateFunction The template function called by the call operation
+         * @param specializedName The specialized name following the convention
          * @return either an existing and matching `FuncOp`, `nullptr` otherwise
          */
         func::FuncOp tryReuseExistingSpecialization(std::string specializedName) {
@@ -466,5 +573,6 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
 }
 
 std::unique_ptr<Pass> daphne::createSpecializeGenericFunctionsPass(const DaphneUserConfig& cfg) {
+    
     return std::make_unique<SpecializeGenericFunctionsPass>(cfg);
 }
