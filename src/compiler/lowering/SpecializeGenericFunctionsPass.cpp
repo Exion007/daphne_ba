@@ -495,7 +495,6 @@ namespace {
                         }
                 );
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
-                    /* CHANGE THIS
                     func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
                     callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                     if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
@@ -503,7 +502,6 @@ namespace {
                     }
                     specializeCallsInFunction(specializedFunc);
                     called.insert(specializedFunc);
-                    */
                 }
                 else {
                     specializeCallsInFunction(calledFunction);
@@ -516,7 +514,6 @@ namespace {
                 auto calledFunction = functions[mapOp.getFunc().str()];
                 if(isFunctionTemplate(calledFunction)) {
                      // Get the element type of the matrix the function should be mapped on
-                     /* CHANGE THIS 
                     mlir::Type opTy = mapOp.getArg().getType();
                     auto inpMatrixTy = opTy.dyn_cast<daphne::MatrixType>();
                     func::FuncOp specializedFunc = createOrReuseSpecialization(inpMatrixTy.getElementType(), {}, calledFunction, mapOp.getLoc());
@@ -550,7 +547,6 @@ namespace {
 
                     specializeCallsInFunction(specializedFunc);
                     called.insert(specializedFunc);
-                    */
                 }
                 else {
                     specializeCallsInFunction(calledFunction);
