@@ -31,7 +31,7 @@
 #include <set>
 #include <vector>
 #include <unordered_map>
-
+#include <algorithm>
 #include <iostream>
 
 using namespace mlir;
@@ -251,6 +251,46 @@ namespace {
         }
 
     private:
+
+        std::vector<std::string> getFunctionBody(func::FuncOp func) {
+            std::vector<std::string> body;
+            func.walk([&](Operation *op) {
+                std::string line;
+                llvm::raw_string_ostream os(line);
+                op->print(os);
+                body.push_back(line);
+            });
+            return body;
+        }
+
+        bool areFunctionsIdentical(const std::vector<std::string> &body1, const std::vector<std::string> &body2) {
+            return body1.size() == body2.size() && std::equal(body1.begin(), body1.end(), body2.begin());
+        }
+
+        void checkForDuplicateSpecializations(std::unordered_map<std::string, func::FuncOp> &functions) {
+            std::unordered_map<std::string, std::vector<std::string>> functionBodies;
+
+            for (const auto &entry : functions) {
+                const std::string &funcName = entry.first;
+                func::FuncOp funcOp = entry.second;
+
+                std::vector<std::string> funcBody = getFunctionBody(funcOp);
+
+                bool isDuplicate = false;
+                for (const auto &existingFunc : functionBodies) {
+                    if (areFunctionsIdentical(existingFunc.second, funcBody)) {
+                        isDuplicate = true;
+                        std::cout << "Function " << funcName << " is identical to " << existingFunc.first << ". Skipping specialization." << std::endl;
+                        break;
+                    }
+                }
+
+                if (!isDuplicate) {
+                    functionBodies[funcName] = std::move(funcBody);
+                }
+            }
+        }
+
         /**
          * @brief Print the callgraph  -> Debugging Purposes!!     
          */
@@ -560,6 +600,10 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         }
         specializeCallsInFunction(function);
     }
+
+    // After specialization, check for duplicates
+    checkForDuplicateSpecializations(functions);
+
     // Delete non-called functions.
     for(auto f : functions) {
         // Never remove the main or dist function.
