@@ -372,12 +372,6 @@ namespace {
                     }
                 }
             });
-            std::vector<std::string> recursiveFunctions = checkRecursionInCallGraph();
-            std::cout << "Recursive Functions: ";
-            for(auto it : recursiveFunctions) {
-                std::cout << it << " ";
-            }
-            std::cout << std::endl;
         }
 
         /**
