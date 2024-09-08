@@ -31,7 +31,7 @@
 #include <set>
 #include <vector>
 #include <unordered_map>
-
+#include <algorithm>
 #include <iostream>
 
 using namespace mlir;
@@ -253,6 +253,7 @@ namespace {
 
     private:
 
+<<<<<<< HEAD
 
         void detectRecursion(const std::string &func, std::set<std::string> &visitedInGraph, std::vector<std::string> &callStack) {
             // If function is already on the stack, we found a recursion
@@ -298,6 +299,45 @@ namespace {
                 // Detect recursions starting from the current function
                 detectRecursion(entry.first, visitedInGraph, callStack);
             }
+=======
+        std::vector<std::string> getFunctionBody(func::FuncOp func) {
+            std::vector<std::string> body;
+            func.walk([&](Operation *op) {
+                std::string line;
+                llvm::raw_string_ostream os(line);
+                op->print(os);
+                body.push_back(line);
+            });
+            return body;
+        }
+
+        bool areFunctionsIdentical(const std::vector<std::string> &body1, const std::vector<std::string> &body2) {
+            return body1.size() == body2.size() && std::equal(body1.begin(), body1.end(), body2.begin());
+        }
+
+        void checkForDuplicateSpecializations(std::unordered_map<std::string, func::FuncOp> &functions) {
+            std::unordered_map<std::string, std::vector<std::string>> functionBodies;
+
+            for (const auto &entry : functions) {
+                const std::string &funcName = entry.first;
+                func::FuncOp funcOp = entry.second;
+
+                std::vector<std::string> funcBody = getFunctionBody(funcOp);
+
+                bool isDuplicate = false;
+                for (const auto &existingFunc : functionBodies) {
+                    if (areFunctionsIdentical(existingFunc.second, funcBody)) {
+                        isDuplicate = true;
+                        std::cout << "Function " << funcName << " is identical to " << existingFunc.first << ". Skipping specialization." << std::endl;
+                        break;
+                    }
+                }
+
+                if (!isDuplicate) {
+                    functionBodies[funcName] = std::move(funcBody);
+                }
+            }
+>>>>>>> f307e73cc9bdbc328a5f20138a593bf7b236cf99
         }
 
         /**
@@ -601,6 +641,10 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         }
         specializeCallsInFunction(function);
     }
+
+    // After specialization, check for duplicates
+    checkForDuplicateSpecializations(functions);
+
     // Delete non-called functions.
     for(auto f : functions) {
         // Never remove the main or dist function.
