@@ -326,7 +326,7 @@ namespace {
             // Check if this normalized body already exists
             if (normalizedToOriginalMap.find(normalizedBodyStr) != normalizedToOriginalMap.end()) {
                 std::string existingFuncName = normalizedToOriginalMap[normalizedBodyStr];
-                std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Deleting this function." << std::endl;
+                //std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Deleting this function." << std::endl;
                 // Erase the current function as it is a duplicate
                 it = functions.erase(it); // Erase returns the next iterator
             } else {
@@ -516,17 +516,17 @@ namespace {
         void printCallGraph() {
             for(const auto &entry : callGraph) {
                 std::string funcName = entry.first;
-                std::cout << funcName << " #!#!#calls:#!#!# ";
+                //std::cout << funcName << " #!#!#calls:#!#!# ";
                 if(entry.second.empty()) {
-                    std::cout << "No functions";
+                    //std::cout << "No functions";
                 } else {
                     for (const std::string &calledFuncName : entry.second) {
-                        std::cout << calledFuncName << " ";
+                        //std::cout << calledFuncName << " ";
                     }
                 }
-                std::cout << std::endl;
+                //std::cout << std::endl;
             }
-            std::cout<<std::endl<<std::endl;
+            //std::cout<<std::endl<<std::endl;
         }
 
 
@@ -635,13 +635,13 @@ namespace {
 
             findRecursions();
             for (const auto& cycle : recursiveCalls) {
-                std::cout << "Cycle detected: ";
+                //std::cout << "Cycle detected: ";
                 for (const auto& func : cycle) {
-                    std::cout << func << " ";
+                    //std::cout << func << " ";
                 }
-                std::cout << std::endl;
+                //std::cout << std::endl;
             }
-            std::cout << std::endl;
+            //std::cout << std::endl;
             printCallGraph();
             return inferTypesInFunction(specializedFunc);
         }
