@@ -304,29 +304,35 @@ namespace {
      * // This will identify and skip functions that are redundant due to having similar bodies.
      */
     void checkForDuplicateSpecializations(std::unordered_map<std::string, func::FuncOp> &functions) {
-        std::unordered_map<std::string, std::vector<std::string>> normalizedFunctionBodies;
         std::unordered_map<std::string, std::string> normalizedToOriginalMap; // To track duplicates
 
-        for (const auto &entry : functions) {
-            const std::string &funcName = entry.first;
-            func::FuncOp funcOp = entry.second;
+        for (auto it = functions.begin(); it != functions.end();) {
+            const std::string &funcName = it->first;
+            func::FuncOp funcOp = it->second;
 
             std::vector<std::string> funcBody = getFunctionBody(funcOp);
             std::vector<std::string> normalizedBody = normalizeFunctionBody(funcBody);
 
             // Convert normalized body to a single string for easy comparison
             std::string normalizedBodyStr;
-            for (const auto &line : normalizedBody) {
-                normalizedBodyStr += line + "\n";
+            for (const auto &line : funcBody) {
+                if(line.find("daphne.generic_call") == std::string::npos){
+                    normalizedBodyStr += line + "\n"; 
+                }
             }
 
+            //std::cout << "Function: " << funcName << "Body String: ";
+            //std::cout << normalizedBodyStr << std::endl << std::endl;
             // Check if this normalized body already exists
             if (normalizedToOriginalMap.find(normalizedBodyStr) != normalizedToOriginalMap.end()) {
                 std::string existingFuncName = normalizedToOriginalMap[normalizedBodyStr];
-                std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Skipping specialization." << std::endl;
+                std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Deleting this function." << std::endl;
+                // Erase the current function as it is a duplicate
+                it = functions.erase(it); // Erase returns the next iterator
             } else {
+                // If the function is unique, store its normalized body
                 normalizedToOriginalMap[normalizedBodyStr] = funcName;
-                normalizedFunctionBodies[funcName] = normalizedBody;
+                ++it; // Move to the next function
             }
         }
     }

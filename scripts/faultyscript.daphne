@@ -5,11 +5,18 @@ def foo(n: si64, m: si64) -> si64 {
   return foo(n - 1,m);
 }
 
+def foo2(n: si64, m: si64) -> si64 {
+  if(n<=0)
+    return m;
+  return foo2(n-1, m);
+}
+
 def bar(n: si64) -> si64 {
   if(n>5) {
-    return foo(n-1,n);
+    return foo(n-1,n)+foo2(n-1,n);
   }
   return n;
 }
 
 print(bar(10));
+print(bar(5));
