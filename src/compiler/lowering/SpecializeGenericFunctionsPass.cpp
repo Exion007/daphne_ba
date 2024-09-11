@@ -239,9 +239,10 @@ namespace {
 
         std::map<std::string, std::set<std::string>> callGraph;
         std::set<std::set<std::string>> recursiveCalls;
-        std::map<std::string, int> recursiveCallsNum;
+        std::map<std::set<std::string>, int> recursiveCallsNum;
         std::set<std::string> visitedInGraph;
         std::vector<std::string> callStack;
+        std::map<std::string, std::string> duplicateFunctions;
 
         const DaphneUserConfig& userConfig;
         std::shared_ptr<spdlog::logger> logger;
@@ -421,6 +422,7 @@ namespace {
                 specializedVersions.insert({templateFunction.getSymName().str(), specializedFunc});
             
             updateCallGraph(inferTypesInFunction(specializedFunc));
+
             findRecursions();
             for (const auto& cycle : recursiveCalls) {
                 std::cout << "Cycle detected: ";
@@ -480,6 +482,7 @@ namespace {
          * @param function The `FuncOp` to scan for function specializations
          */
         void specializeCallsInFunction(func::FuncOp function) {
+
             if(visited.count(function)) {
                 return;
             }
@@ -495,6 +498,7 @@ namespace {
                 );
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
+                    
                     callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                     if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                         inferTypesInFunction(function);
