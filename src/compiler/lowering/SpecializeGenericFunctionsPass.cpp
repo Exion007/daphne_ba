@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <iostream>
+#include <regex>
 
 using namespace mlir;
 
@@ -124,6 +125,217 @@ namespace {
         return output;
     }
 
+    /**
+     * @brief Extracts variable names from a given line of code.
+     * 
+     * This function uses a regular expression to match variable names in the input line.
+     * Variable names must start with a letter or underscore and may contain letters, digits, or underscores.
+     * 
+     * @param line The input line of code from which to extract variable names.
+     * @return A vector of strings containing the variable names found in the line.
+     * 
+     * @example
+     * std::vector<std::string> vars = extractVariablesFromLine("int x = y + 10;");
+     * // vars will contain: ["int", "x", "y"]
+     */
+    std::vector<std::string> extractVariablesFromLine(const std::string &line) {
+        std::vector<std::string> variables;
+        std::regex var_regex(R"(\b([a-zA-Z_][a-zA-Z0-9_]*)\b)");
+        auto words_begin = std::sregex_iterator(line.begin(), line.end(), var_regex);
+        auto words_end = std::sregex_iterator();
+
+        for (std::sregex_iterator it = words_begin; it != words_end; ++it) {
+            std::smatch match = *it;
+            std::string var = match.str(1);
+            variables.push_back(var);
+        }
+        return variables;
+    }
+
+    /**
+     * @brief Normalizes commutative operations by ensuring operands are in alphabetical order.
+     * 
+     * This function scans a line of code for commutative operations (e.g., addition `+`)
+     * and reorders the operands so that the smaller (alphabetically) operand appears first.
+     * This helps to treat equivalent expressions like `a + b` and `b + a` as the same.
+     * 
+     * @param line The input line of code to normalize.
+     * @return A string with the normalized commutative operations.
+     * 
+     * @example
+     * std::string normalized = normalizeCommutativeOperations("y + x");
+     * // normalized will be: "x + y"
+     */
+    std::string normalizeCommutativeOperations(const std::string &line) {
+        std::regex add_regex(R"((\w+)\s*\+\s*(\w+))");
+        std::smatch match;
+        std::string normalizedLine = line;
+
+        while (std::regex_search(normalizedLine, match, add_regex)) {
+            std::string operand1 = match[1];
+            std::string operand2 = match[2];
+            if (operand1 > operand2) std::swap(operand1, operand2);
+            std::string replacement = operand1 + " + " + operand2;
+            normalizedLine = match.prefix().str() + replacement + match.suffix().str();
+        }
+
+        return normalizedLine;
+    }
+
+    /**
+     * @brief Normalizes the entire function body by replacing variables, constants, 
+     * and commutative operations, and ignoring non-essential lines.
+     * 
+     * This function processes each line of a function body, normalizing variable names,
+     * replacing constants with "CONST", and reordering operands in commutative operations.
+     * It also skips over non-essential lines, like those containing logging statements.
+     * 
+     * @param body A vector of strings, where each string is a line of the function body.
+     * @return A vector of strings representing the normalized function body.
+     * 
+     * @example
+     * std::vector<std::string> body = {"int x = 5 + y;", "log('test');", "float z = x + 10;"};
+     * std::vector<std::string> normalizedBody = normalizeFunctionBody(body);
+     * // normalizedBody will be: {"TYPE var0 = CONST + var1;", "TYPE var2 = var0 + CONST;"}
+     */
+    std::vector<std::string> normalizeFunctionBody(const std::vector<std::string> &body) {
+        std::unordered_map<std::string, std::string> variableMapping;
+        int variableCounter = 0;
+        std::vector<std::string> normalizedBody;
+
+        for (const auto &line : body) {
+            std::string normalizedLine = line;
+
+            // Ignore non-essential lines like logging
+            if (line.find("log") != std::string::npos) {
+                continue; // Skip lines that include "log" (for simplicity)
+            }
+
+            // Normalize data types (replace 'int' and 'float' with 'TYPE')
+            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\b(int|float|double|char|long)\b)"), "TYPE");
+
+            // Normalize variables
+            std::vector<std::string> variables = extractVariablesFromLine(line);
+            for (const auto &var : variables) {
+                if (variableMapping.find(var) == variableMapping.end()) {
+                    variableMapping[var] = "var" + std::to_string(variableCounter++);
+                }
+                // Use word boundaries to replace exact matches
+                normalizedLine = std::regex_replace(normalizedLine, std::regex("\\b" + var + "\\b"), variableMapping[var]);
+            }
+
+            // Normalize constants (replace numeric literals with "CONST")
+            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\b\d+\b)"), "CONST");
+
+            // Normalize commutative operations
+            normalizedLine = normalizeCommutativeOperations(normalizedLine);
+
+            // Remove extra whitespace
+            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\s+)"), " ");
+
+            normalizedBody.push_back(normalizedLine);
+        }
+
+        return normalizedBody;
+    }
+
+    /**
+     * @brief Compares two function bodies after normalization to check if they are similar.
+     * 
+     * This function normalizes both function bodies (replacing variables, constants, 
+     * and normalizing commutative operations) and then checks if the normalized versions
+     * of both functions are identical.
+     * 
+     * @param body1 The first function body (vector of strings).
+     * @param body2 The second function body (vector of strings).
+     * @return true if the two function bodies are similar after normalization, false otherwise.
+     * 
+     * @example
+     * std::vector<std::string> body1 = {"int a = b + c;", "float d = a + 10;"};
+     * std::vector<std::string> body2 = {"float x = y + z;", "int w = x + 5;"};
+     * bool areSimilar = areFunctionsSimilar(body1, body2);
+     * // areSimilar will be true because the functions are similar after normalization.
+     */
+    bool areFunctionsSimilar(const std::vector<std::string> &body1, const std::vector<std::string> &body2) {
+        std::vector<std::string> normalizedBody1 = normalizeFunctionBody(body1);
+        std::vector<std::string> normalizedBody2 = normalizeFunctionBody(body2);
+
+        return normalizedBody1.size() == normalizedBody2.size() &&
+            std::equal(normalizedBody1.begin(), normalizedBody1.end(), normalizedBody2.begin());
+    }
+
+    /**
+     * @brief Extracts the body of a function as a vector of strings.
+     * 
+     * This function walks through each operation in the function and collects 
+     * the operation as a string in a vector. Each operation corresponds to a line in the function.
+     * 
+     * @param func The function from which to extract the body (as a `FuncOp`).
+     * @return A vector of strings where each string represents a line of the function body.
+     * 
+     * @example
+     * func::FuncOp func = ...; // Assuming func is initialized elsewhere
+     * std::vector<std::string> body = getFunctionBody(func);
+     * // body might look like: {"int foo(int x) {", "return x + 5;", "}"}
+     */
+    std::vector<std::string> getFunctionBody(func::FuncOp func) {
+        std::vector<std::string> body;
+        func.walk([&](Operation *op) {
+            std::string line;
+            llvm::raw_string_ostream os(line);
+            op->print(os);
+            body.push_back(line);
+        });
+        return body;
+    }
+
+    /**
+     * @brief Checks if specialized versions of functions already exist by comparing their normalized bodies.
+     * 
+     * This function iterates through a map of functions, normalizes their bodies, and compares 
+     * the normalized bodies. If a similar function (with the same normalized body) already exists, 
+     * it skips the specialization process for that function.
+     * 
+     * @param functions A map where the key is the function name and the value is the function (`FuncOp`).
+     * 
+     * @example
+     * std::unordered_map<std::string, func::FuncOp> functions = ...;
+     * checkForDuplicateSpecializations(functions);
+     * // This will identify and skip functions that are redundant due to having similar bodies.
+     */
+    void checkForDuplicateSpecializations(std::unordered_map<std::string, func::FuncOp> &functions) {
+        std::unordered_map<std::string, std::string> normalizedToOriginalMap; // To track duplicates
+
+        for (auto it = functions.begin(); it != functions.end();) {
+            const std::string &funcName = it->first;
+            func::FuncOp funcOp = it->second;
+
+            std::vector<std::string> funcBody = getFunctionBody(funcOp);
+            std::vector<std::string> normalizedBody = normalizeFunctionBody(funcBody);
+
+            // Convert normalized body to a single string for easy comparison
+            std::string normalizedBodyStr;
+            for (const auto &line : funcBody) {
+                if(line.find("daphne.generic_call") == std::string::npos){
+                    normalizedBodyStr += line + "\n"; 
+                }
+            }
+
+            //std::cout << "Function: " << funcName << "Body String: ";
+            //std::cout << normalizedBodyStr << std::endl << std::endl;
+            // Check if this normalized body already exists
+            if (normalizedToOriginalMap.find(normalizedBodyStr) != normalizedToOriginalMap.end()) {
+                std::string existingFuncName = normalizedToOriginalMap[normalizedBodyStr];
+                std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Deleting this function." << std::endl;
+                // Erase the current function as it is a duplicate
+                it = functions.erase(it); // Erase returns the next iterator
+            } else {
+                // If the function is unique, store its normalized body
+                normalizedToOriginalMap[normalizedBodyStr] = funcName;
+                ++it; // Move to the next function
+            }
+        }
+    }
     /**
      * @brief Check if a function with the given input/output types can be called with the input types given.
      * @param functionType The type of the function
@@ -253,7 +465,6 @@ namespace {
         }
 
     private:
-
         void detectRecursion(const std::string &func, std::set<std::string> &visitedInGraph, std::vector<std::string> &callStack) {
             // If function is already on the stack, we found a recursion
             auto it = std::find(callStack.begin(), callStack.end(), func);
@@ -299,7 +510,6 @@ namespace {
                 detectRecursion(entry.first, visitedInGraph, callStack);
             }
         }
-
         /**
          * @brief Print the callgraph  -> Debugging Purposes!!     
          */
