@@ -1,22 +1,20 @@
 
-def foo(n: si64, m: si64) -> si64 {
-  if(n <= 0)
-      return m;
-  return foo(n - 1,m);
+def a(n: si64) -> si64 {
+	if(n <= 0)
+		return 0;
+	return a(n-1)+1;
 }
 
-def foo2(n: si64, m: si64) -> si64 {
-  if(n<=0)
-    return m;
-  return foo2(n-1, m);
+def b(n: si64) -> si64 {
+	if(n == 0)
+		return 0;
+	return a(n-1)+1+b(n-1);
 }
 
-def bar(n: si64) -> si64 {
-  if(n>5) {
-    return foo(n-1,n)+foo2(n-1,n);
-  }
-  return n;
+def c(n: si64) -> si64 {
+	if(n <= 0)
+		return 0;
+	return b(n-1)+1+c(n-1);
 }
 
-print(bar(10));
-print(bar(5));
+print(c($n));

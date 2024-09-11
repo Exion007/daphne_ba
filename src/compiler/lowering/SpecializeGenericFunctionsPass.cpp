@@ -450,9 +450,11 @@ namespace {
         std::set<func::FuncOp> templateFunctions;
 
         std::map<std::string, std::set<std::string>> callGraph;
-
-        std::set<std::string> recursionFuncs;
-        std::map<std::vector<std::string>, int> recursionCalls;
+        std::set<std::set<std::string>> recursiveCalls;
+        std::map<std::set<std::string>, int> recursiveCallsNum;
+        std::set<std::string> visitedInGraph;
+        std::vector<std::string> callStack;
+        std::map<std::string, std::string> duplicateFunctions;
 
         const DaphneUserConfig& userConfig;
         std::shared_ptr<spdlog::logger> logger;
@@ -463,7 +465,51 @@ namespace {
         }
 
     private:
+        void detectRecursion(const std::string &func, std::set<std::string> &visitedInGraph, std::vector<std::string> &callStack) {
+            // If function is already on the stack, we found a recursion
+            auto it = std::find(callStack.begin(), callStack.end(), func);
+            if (it != callStack.end()) {
+                // Extract the recursion cycle
+                std::set<std::string> cycle(it, callStack.end());
+                recursiveCalls.insert(cycle);
+                return;
+            }
 
+            // If function was already visited and didn't form a cycle, skip it
+            if (visitedInGraph.find(func) != visitedInGraph.end()) {
+                return;
+            }
+
+            // Mark the function as visited and add it to the current call stack
+            visitedInGraph.insert(func);
+            callStack.push_back(func);
+
+            // Recursively visit all called functions
+            if (callGraph.find(func) != callGraph.end()) {
+                for (const auto &calledFunc : callGraph[func]) {
+                    detectRecursion(calledFunc, visitedInGraph, callStack);
+                }
+            }
+
+            // Backtrack: remove the function from the call stack
+            callStack.pop_back();
+        }
+
+        // Function to initiate recursion detection for all functions in the call graph
+        void findRecursions() {
+            // Clear previous recursive calls
+            recursiveCalls.clear();
+
+            // Iterate over each function in the call graph
+            for (const auto &entry : callGraph) {
+                // Reset visited and call stack for each new starting function
+                std::set<std::string> visitedInGraph;
+                std::vector<std::string> callStack;
+                
+                // Detect recursions starting from the current function
+                detectRecursion(entry.first, visitedInGraph, callStack);
+            }
+        }
         /**
          * @brief Print the callgraph  -> Debugging Purposes!!     
          */
@@ -483,19 +529,8 @@ namespace {
             std::cout<<std::endl<<std::endl;
         }
 
-        std::vector<std::string> getRecursiveCalls() {
-            std::vector<std::string> checkedFunctions;
-            std::vector<std::string> recursiveFunctions;
-            for (const auto &it : callGraph) {
-                // Use std::find to check if the function is in the checkedFunctions vector
-                if (std::find(checkedFunctions.begin(), checkedFunctions.end(), it.first) != checkedFunctions.end()) {
-                    recursiveFunctions.push_back(it.first);
-                } else {
-                    checkedFunctions.push_back(it.first);
-                }
-            }
-            return recursiveFunctions;
-        }
+
+
 
         /**
          * @brief Update the callGraph map
@@ -517,7 +552,7 @@ namespace {
                 callGraph[funcName] = {};
             } else {
                 // If it was initialized already, return immediately. Specialized functions always call the same!
-                std::cout << "RETURNING CAUSE " << funcName << " IS ALREADY INITIALIZED!" << std::endl;
+                //std::cout << "RETURNING CAUSE " << funcName << " IS ALREADY INITIALIZED!" << std::endl;
                 return;
             }
             func.walk([&](Operation *op) {
@@ -597,6 +632,16 @@ namespace {
                 specializedVersions.insert({templateFunction.getSymName().str(), specializedFunc});
             
             updateCallGraph(inferTypesInFunction(specializedFunc));
+
+            findRecursions();
+            for (const auto& cycle : recursiveCalls) {
+                std::cout << "Cycle detected: ";
+                for (const auto& func : cycle) {
+                    std::cout << func << " ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << std::endl;
             printCallGraph();
             return inferTypesInFunction(specializedFunc);
         }
@@ -647,6 +692,7 @@ namespace {
          * @param function The `FuncOp` to scan for function specializations
          */
         void specializeCallsInFunction(func::FuncOp function) {
+
             if(visited.count(function)) {
                 return;
             }
@@ -662,6 +708,7 @@ namespace {
                 );
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
+                    
                     callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                     if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                         inferTypesInFunction(function);
@@ -767,9 +814,6 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         }
         specializeCallsInFunction(function);
     }
-
-    // After specialization, check for duplicates
-    checkForDuplicateSpecializations(functions);
 
     // Delete non-called functions.
     for(auto f : functions) {
