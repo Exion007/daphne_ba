@@ -697,6 +697,7 @@ namespace {
                 return;
             }
             visited.insert(function);
+            
             // Specialize all functions called directly
             function.walk([&](daphne::GenericCallOp callOp) {
                 auto calledFunction = functions[callOp.getCallee().str()];
@@ -706,9 +707,25 @@ namespace {
                             return CompilerUtils::constantOfAnyType(v) != nullptr;
                         }
                 );
+
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
-                    
+
+                    // Check for duplicates
+                    std::vector<std::string> specializedBody = getFunctionBody(specializedFunc);
+                    for (auto &[originalName, originalFunc] : functions) {
+                        if (areFunctionsSimilar(getFunctionBody(originalFunc), specializedBody)) {
+                            // Mark as duplicate
+                            duplicateFunctions[specializedFunc.getSymName().str()] = originalFunc.getSymName().str();
+
+                            // Replace call to the duplicate with the original function
+                            callOp.setCalleeAttr(originalFunc.getSymNameAttr());
+                            
+                            // Return early as we found a duplicate
+                            return;
+                        }
+                    }
+
                     callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                     if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                         inferTypesInFunction(function);
@@ -730,6 +747,17 @@ namespace {
                     mlir::Type opTy = mapOp.getArg().getType();
                     auto inpMatrixTy = opTy.dyn_cast<daphne::MatrixType>();
                     func::FuncOp specializedFunc = createOrReuseSpecialization(inpMatrixTy.getElementType(), {}, calledFunction, mapOp.getLoc());
+                    
+                    // Check for duplicates
+                    std::vector<std::string> specializedBody = getFunctionBody(specializedFunc);
+                    for (auto &[originalName, originalFunc] : functions) {
+                        if (areFunctionsSimilar(getFunctionBody(originalFunc), specializedBody)) {
+                            duplicateFunctions[specializedFunc.getSymName().str()] = originalFunc.getSymName().str();
+                            mapOp.setFuncAttr(originalFunc.getSymNameAttr());
+                            return;
+                        }
+                    }
+                    
                     mapOp.setFuncAttr(specializedFunc.getSymNameAttr());
 
                     // We only allow functions that return exactly one result for mapOp
