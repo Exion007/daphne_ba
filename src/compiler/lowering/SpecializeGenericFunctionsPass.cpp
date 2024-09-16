@@ -720,6 +720,9 @@ namespace {
 
                             // Replace call to the duplicate with the original function
                             callOp.setCalleeAttr(originalFunc.getSymNameAttr());
+
+                            /********Delete the duplicate specialized function from the IR **********/
+                            specializedFunc.getOperation()->erase();
                             
                             // Return early as we found a duplicate
                             return;
@@ -752,8 +755,17 @@ namespace {
                     std::vector<std::string> specializedBody = getFunctionBody(specializedFunc);
                     for (auto &[originalName, originalFunc] : functions) {
                         if (areFunctionsSimilar(getFunctionBody(originalFunc), specializedBody)) {
+                            
+                            // Mark as duplicate
                             duplicateFunctions[specializedFunc.getSymName().str()] = originalFunc.getSymName().str();
+                            
+                            // Replace call to the duplicate with the original function
                             mapOp.setFuncAttr(originalFunc.getSymNameAttr());
+
+                            /********Delete the duplicate specialized function from the IR **********/
+                            specializedFunc.getOperation()->erase();
+
+                            // Return early as we found a duplicate and deleted it
                             return;
                         }
                     }
