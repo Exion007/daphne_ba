@@ -456,6 +456,8 @@ namespace {
         std::vector<std::string> callStack;
         std::map<std::string, std::string> duplicateFunctions;
 
+        // Can store all callOps in a list
+        
         const DaphneUserConfig& userConfig;
         std::shared_ptr<spdlog::logger> logger;
 
@@ -592,8 +594,8 @@ namespace {
         func::FuncOp createSpecializedFunction(func::FuncOp templateFunction, TypeRange specializedTypes, ValueRange operands) {
             OpBuilder builder(templateFunction);
             auto specializedFunc = templateFunction.clone();
+            std::cout << "BUILDER INSERT (createSpecializedFunction)" << std::endl;
             builder.insert(specializedFunc);
-
             auto uniqueFuncName = uniqueSpecializedFuncName(templateFunction.getSymName().str(), specializedTypes, operands);
             specializedFunc.setName(uniqueFuncName);
             functions.insert({uniqueFuncName, specializedFunc});
@@ -617,7 +619,9 @@ namespace {
                     if(Operation * co = CompilerUtils::constantOfAnyType(v)) {
                         // Clone the constant operation into the function body.
                         Operation * coNew = co->clone();
+                        std::cout << "BUILDER INSERT (createSpecializedFunction 2), Name: " << coNew->getName().getStringRef().data() << std::endl;
                         builder.insert(coNew);
+                        std::cout << "BUILDER INSERT (createSpecializedFunction 2) FINISHED" << std::endl;
                         // Replace all uses of the corresponding block argument by the newly inserted constant.
                         specializedFuncBodyBlock.getArgument(i).replaceAllUsesWith(coNew->getResult(0));
                         // TODO We could even remove the corresponding function argument.
@@ -670,6 +674,7 @@ namespace {
          */
         func::FuncOp createOrReuseSpecialization(TypeRange operandTypes, ValueRange operands, func::FuncOp calledFunction, mlir::Location callLoc) {
             // check for existing specialization that matches
+
             auto specializedTypes = getSpecializedFuncArgTypes(calledFunction.getFunctionType(), operandTypes, calledFunction.getSymName().str(), callLoc); 
             auto specializedName = uniqueSpecializedFuncName(calledFunction.getSymName().str(), specializedTypes,operands );
             func::FuncOp specializedFunc = tryReuseExistingSpecialization(specializedName);
@@ -708,7 +713,7 @@ namespace {
                 );
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
-                    
+                    // ToDo also update multiple cycles if it applies!
                     callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                     if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                         inferTypesInFunction(function);

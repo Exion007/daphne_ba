@@ -248,7 +248,74 @@ mlir::Value DaphneDSLVisitor::applyLeftIndexing(mlir::Location loc, mlir::Value 
 // Visitor functions
 // ****************************************************************************
 
+//ToDo Entry Point for parsing
 antlrcpp::Any DaphneDSLVisitor::visitScript(DaphneDSLGrammarParser::ScriptContext * ctx) {
+    // Iterate over all statements, if it function, pass signature, then add entry to functionSymbolMap (Member of DaphneDSLVisitor)
+    
+    // Is this quick and dirty or actually good?
+    int counter = 0;
+    for ( auto it : ctx->statement()) {
+        std::cout << "Coutner inside visitScript: " << counter++ << std::endl;
+        if(it->functionStatement()) {
+            std::cout << "Iterator is functionStatement!" << std::endl;
+            
+            auto loc = utils.getLoc(it->functionStatement()->start);
+            auto functionName = it->functionStatement()->name->getText();
+            std::cout << "Name is: " << functionName << std::endl;
+    
+            std::vector<std::string> funcArgNames;
+            std::vector<mlir::Type> funcArgTypes;
+            if(it->functionStatement()->args) {
+                auto functionArguments = static_cast<std::vector<std::pair<std::string, mlir::Type>>>((visit(it->functionStatement()->args)).as<std::vector<std::pair<std::string, mlir::Type>>>());
+                for(const auto &pair : functionArguments) {
+                    if(std::find(funcArgNames.begin(), funcArgNames.end(), pair.first) != funcArgNames.end()) {
+                        throw ErrorHandler::compilerError(loc, "DSLVisitor", "Function argument name `" + pair.first + "` is used twice.");
+                    }
+                    funcArgNames.push_back(pair.first);
+                    funcArgTypes.push_back(pair.second);
+                }
+            }
+
+            auto funcBlock = new mlir::Block();
+            for(auto it2 : llvm::zip(funcArgNames, funcArgTypes)) {
+                auto blockArg = funcBlock->addArgument(std::get<1>(it2), builder.getUnknownLoc());
+                handleAssignmentPart(utils.getLoc(it->functionStatement()->start), std::get<0>(it2), nullptr, symbolTable, blockArg);
+            }   
+
+            std::vector<mlir::Type> returnTypes;
+            mlir::func::FuncOp functionOperation;
+            if(it->functionStatement()->retTys) {
+                // early creation of FuncOp for recursion
+                returnTypes = visit(it->functionStatement()->retTys).as<std::vector<mlir::Type>>();
+                functionOperation = createUserDefinedFuncOp(loc,
+                    builder.getFunctionType(funcArgTypes, returnTypes),
+                    functionName);
+            }
+
+            mlir::OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(funcBlock);
+            visitBlockStatement(it->functionStatement()->bodyStmt);
+            
+            void rectifyEarlyReturn(mlir::scf::IfOp ifOp); 
+            void rectifyEarlyReturns(mlir::Block *funcBlock);
+            rectifyEarlyReturns(funcBlock);
+            
+            if(funcBlock->getOperations().empty() || !funcBlock->getOperations().back().hasTrait<mlir::OpTrait::IsTerminator>()) {
+                builder.create<mlir::daphne::ReturnOp>(utils.getLoc(it->functionStatement()->stop));
+            }
+            auto terminator = funcBlock->getTerminator();
+            auto returnOpTypes = terminator->getOperandTypes(); 
+            if(!functionOperation) {
+                // late creation if no return types defined
+                functionOperation = createUserDefinedFuncOp(loc,
+                    builder.getFunctionType(funcArgTypes, returnOpTypes),
+                    functionName);
+            }
+        }
+    }
+    for (auto it : functionsSymbolMap) {
+        std::cout << "func symbol: " << it.first << std::endl;
+    }
     return visitChildren(ctx);
 }
 
@@ -2090,10 +2157,13 @@ void rectifyEarlyReturns(mlir::Block *funcBlock) {
     }
 }
 
+//Here useful funcs for populating functionssSymbolMap  
 antlrcpp::Any DaphneDSLVisitor::visitFunctionStatement(DaphneDSLGrammarParser::FunctionStatementContext *ctx) {
+    return NULL;
     auto loc = utils.getLoc(ctx->start);
     // TODO: check that the function does not shadow a builtin
     auto functionName = ctx->name->getText();
+    std::cout << "Name is: " << functionName << std::endl;
     // TODO: global variables support in functions
     auto globalSymbolTable = symbolTable;
     symbolTable = ScopedSymbolTable();
