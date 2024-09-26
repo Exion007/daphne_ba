@@ -39,6 +39,154 @@ using namespace mlir;
 
 namespace {
 
+
+
+    /*=========================================================*/
+    // Define a set of commutative operations
+    const std::set<std::string> commutativeOps = {"+", "*"};
+
+    // Create an AST node representation of an operation
+    struct ASTNode {
+        std::string opName;
+        std::vector<ASTNode> children;
+
+        ASTNode(std::string op) : opName(op) {}
+
+        // Add child to the AST node
+        void addChild(const ASTNode &child) {
+            children.push_back(child);
+        }
+
+        // Sort the children if the operation is commutative
+        void sortChildrenIfNeeded() {
+            if (commutativeOps.find(opName) != commutativeOps.end()) {
+                // Sort the children alphabetically based on their opName
+                std::sort(children.begin(), children.end(), [](const ASTNode &a, const ASTNode &b) {
+                    return a.opName < b.opName;
+                });
+            }
+        }
+
+        // Compare two AST nodes (and their children recursively)
+        bool isSimilar(const ASTNode &other) const {
+            if (opName != other.opName || children.size() != other.children.size())
+                return false;
+
+            for (size_t i = 0; i < children.size(); ++i) {
+                if (!children[i].isSimilar(other.children[i]))
+                    return false;
+            }
+            return true;
+        }
+    };
+
+    // Recursively build an AST from the function operations
+    ASTNode buildASTFromFunction(func::FuncOp func) {
+        ASTNode root(func.getSymName().str());
+
+        func.walk([&](Operation *op) {
+            ASTNode node(op->getName().getStringRef().str());
+
+            // Add child nodes for operands
+            for (auto operand : op->getOperands()) {
+                if (auto defOp = operand.getDefiningOp()) {
+                    node.addChild(ASTNode(defOp->getName().getStringRef().str()));
+                }
+            }
+
+            // Sort the children if the operation is commutative
+            node.sortChildrenIfNeeded();
+
+            // Add this node to the root's children
+            root.addChild(node);
+        });
+
+        return root;
+    }
+
+    void replaceConstantsWithVariables(func::FuncOp func) {
+    OpBuilder builder(func.getBody());
+
+    // Track new argument types and body updates
+    // Template vectors are initially optimized for up to 4 elements without heap allocation, but they can grow dynamically beyond that if needed.
+    SmallVector<Type, 4> newArgTypes;
+    SmallVector<Value, 4> newArgs;
+    bool hasConstant = false;
+
+    // For every argument in the function, check if it's a constant and convert it
+    func.walk([&](Operation *op) {
+        builder.setInsertionPoint(op);
+        for (auto operand : op->getOperands()) {
+            if (auto constantOp = CompilerUtils::constantOfAnyType(operand)) {
+                // Generate a new variable for the constant
+                auto loc = op->getLoc();
+                Type type = operand.getType();
+                std::string newVarName = "var" + std::to_string(newArgTypes.size());
+
+                // Create a new argument for the function with this variable
+                Block &body = func.getBody().front();
+                auto newArg = body.addArgument(type, loc);
+
+                newArgTypes.push_back(type);
+                newArgs.push_back(newArg);
+
+                // Replace all uses of the constant with the new variable
+                operand.replaceAllUsesWith(newArg);
+                hasConstant = true;
+            }
+        }
+    });
+
+    if (hasConstant) {
+        // Adjust the function type with new arguments if constants were replaced
+        auto funcType = func.getFunctionType();
+        auto newFuncType = builder.getFunctionType(newArgTypes, funcType.getResults());
+        func.setType(newFuncType);
+    }
+}
+
+    // Compare two functions based on their AST structures
+    bool areFunctionsSimilarAST(func::FuncOp func1, func::FuncOp func2) {
+        ASTNode ast1 = buildASTFromFunction(func1);
+        ASTNode ast2 = buildASTFromFunction(func2);
+
+        // Compare the ASTs of the two functions
+        return ast1.isSimilar(ast2);
+    }
+
+    // Function to check for duplicate specializations based on AST with commutativity
+    void checkForDuplicateSpecializationsAST(std::unordered_map<std::string, func::FuncOp> &functions) {
+        std::unordered_map<std::string, func::FuncOp> astToOriginalMap;  // To track duplicates
+
+        for (auto it = functions.begin(); it != functions.end();) {
+            const std::string &funcName = it->first;
+            func::FuncOp funcOp = it->second;
+
+            bool foundDuplicate = false;
+            
+            // Compare with existing functions based on AST similarity
+            for (const auto &entry : astToOriginalMap) {
+                func::FuncOp existingFunc = entry.second;
+                if (areFunctionsSimilarAST(funcOp, existingFunc)) {
+                    // A duplicate function was found
+                    foundDuplicate = true;
+                    break;
+                }
+            }
+
+            if (foundDuplicate) {
+                // Delete the duplicate function
+                it = functions.erase(it);  // Erase returns the next iterator
+            } else {
+                // If the function is unique, store its AST
+                astToOriginalMap[funcName] = funcOp;
+                ++it;  // Move to the next function
+            }
+        }
+    }
+
+    /*=========================================================*/
+    
     /**
      * @brief Checks if the function is untyped, i.e., if at least one of the inputs is
      * of unknown type.
@@ -804,6 +952,15 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
     for(const auto &entry : functions) {
         entryFunctions.push_back(entry.second);
     }
+
+    // Replace constants in each function before specialization
+    for (auto &entry : functions) {
+        replaceConstantsWithVariables(entry.second); // Replaces constants with variables
+    }
+
+    // Before specializing, check for duplicates using AST-based comparison
+    checkForDuplicateSpecializationsAST(functions);
+
     for(const auto &function : entryFunctions) {
         if(isFunctionTemplate(function) || visited.count(function) || templateFunctions.count(function))
             continue;
