@@ -45,19 +45,38 @@ namespace {
     // Define a set of commutative operations
     const std::set<std::string> commutativeOps = {"+", "*"};
 
-    // Create an AST node representation of an operation
+    /**
+     * @brief Represents a node in an Abstract Syntax Tree (AST).
+     * 
+     * This structure is used to build and compare ASTs for functions,
+     * enabling detection of commutative operations.
+     */
     struct ASTNode {
-        std::string opName;
-        std::vector<ASTNode> children;
+        std::string opName;             ///< Name of the operation
+        std::vector<ASTNode> children;  ///< Child nodes representing the operands
 
+        /**
+         * @brief Constructor to initialize an ASTNode with the given operation name.
+         * 
+         * @param op The operation name (e.g., "+" or "*")
+         */
         ASTNode(std::string op) : opName(op) {}
 
-        // Add child to the AST node
+        /**
+         * @brief Adds a child node to the current AST node.
+         * 
+         * @param child The child AST node to be added
+         */
         void addChild(const ASTNode &child) {
             children.push_back(child);
         }
 
-        // Sort the children if the operation is commutative
+        /**
+         * @brief Sorts the child nodes alphabetically if the operation is commutative.
+         * 
+         * This ensures that the AST representation is consistent for commutative
+         * operations, allowing for proper comparison.
+         */
         void sortChildrenIfNeeded() {
             if (commutativeOps.find(opName) != commutativeOps.end()) {
                 // Sort the children alphabetically based on their opName
@@ -67,7 +86,15 @@ namespace {
             }
         }
 
-        // Compare two AST nodes (and their children recursively)
+        /**
+         * @brief Compares this ASTNode with another to check if they are similar.
+         * 
+         * The comparison is recursive and includes both the operation names and
+         * their child nodes.
+         * 
+         * @param other The other ASTNode to compare with
+         * @return true if both ASTs are structurally identical, false otherwise
+         */
         bool isSimilar(const ASTNode &other) const {
             if (opName != other.opName || children.size() != other.children.size())
                 return false;
@@ -80,7 +107,15 @@ namespace {
         }
     };
 
-    // Recursively build an AST from the function operations
+    /**
+     * @brief Builds an AST representation from a given function.
+     * 
+     * The AST captures the structure of the function's operations and their operands,
+     * organizing them into a tree. This is useful for comparing function structures.
+     * 
+     * @param func The function to convert into an AST
+     * @return An ASTNode representing the root of the function's AST
+     */
     ASTNode buildASTFromFunction(func::FuncOp func) {
         ASTNode root(func.getSymName().str());
 
@@ -104,48 +139,65 @@ namespace {
         return root;
     }
 
+    /**
+     * @brief Replaces constant values in a function with variables.
+     * 
+     * This function scans the operations of a given function and replaces any
+     * constant values with newly generated variables. It adjusts the function's
+     * argument list and type accordingly.
+     * 
+     * @param func The function to modify by replacing constants with variables
+     */
     void replaceConstantsWithVariables(func::FuncOp func) {
-    OpBuilder builder(func.getBody());
+        OpBuilder builder(func.getBody());
 
-    // Track new argument types and body updates
-    // Template vectors are initially optimized for up to 4 elements without heap allocation, but they can grow dynamically beyond that if needed.
-    SmallVector<Type, 4> newArgTypes;
-    SmallVector<Value, 4> newArgs;
-    bool hasConstant = false;
+        // Track new argument types and body updates
+        SmallVector<Type, 4> newArgTypes;
+        SmallVector<Value, 4> newArgs;
+        bool hasConstant = false;
 
-    // For every argument in the function, check if it's a constant and convert it
-    func.walk([&](Operation *op) {
-        builder.setInsertionPoint(op);
-        for (auto operand : op->getOperands()) {
-            if (auto constantOp = CompilerUtils::constantOfAnyType(operand)) {
-                // Generate a new variable for the constant
-                auto loc = op->getLoc();
-                Type type = operand.getType();
-                std::string newVarName = "var" + std::to_string(newArgTypes.size());
+        // For every argument in the function, check if it's a constant and convert it
+        func.walk([&](Operation *op) {
+            builder.setInsertionPoint(op);
+            for (auto operand : op->getOperands()) {
+                if (auto constantOp = CompilerUtils::constantOfAnyType(operand)) {
+                    // Generate a new variable for the constant
+                    auto loc = op->getLoc();
+                    Type type = operand.getType();
+                    std::string newVarName = "var" + std::to_string(newArgTypes.size());
 
-                // Create a new argument for the function with this variable
-                Block &body = func.getBody().front();
-                auto newArg = body.addArgument(type, loc);
+                    // Create a new argument for the function with this variable
+                    Block &body = func.getBody().front();
+                    auto newArg = body.addArgument(type, loc);
 
-                newArgTypes.push_back(type);
-                newArgs.push_back(newArg);
+                    newArgTypes.push_back(type);
+                    newArgs.push_back(newArg);
 
-                // Replace all uses of the constant with the new variable
-                operand.replaceAllUsesWith(newArg);
-                hasConstant = true;
+                    // Replace all uses of the constant with the new variable
+                    operand.replaceAllUsesWith(newArg);
+                    hasConstant = true;
+                }
             }
+        });
+
+        if (hasConstant) {
+            // Adjust the function type with new arguments if constants were replaced
+            auto funcType = func.getFunctionType();
+            auto newFuncType = builder.getFunctionType(newArgTypes, funcType.getResults());
+            func.setType(newFuncType);
         }
-    });
-
-    if (hasConstant) {
-        // Adjust the function type with new arguments if constants were replaced
-        auto funcType = func.getFunctionType();
-        auto newFuncType = builder.getFunctionType(newArgTypes, funcType.getResults());
-        func.setType(newFuncType);
     }
-}
 
-    // Compare two functions based on their AST structures
+    /**
+     * @brief Compares two functions based on their AST structures.
+     * 
+     * The comparison accounts for both the operations and operands of the functions.
+     * Commutative operations are normalized by sorting their operands.
+     * 
+     * @param func1 The first function to compare
+     * @param func2 The second function to compare
+     * @return true if both functions have equivalent ASTs, false otherwise
+     */
     bool areFunctionsSimilarAST(func::FuncOp func1, func::FuncOp func2) {
         ASTNode ast1 = buildASTFromFunction(func1);
         ASTNode ast2 = buildASTFromFunction(func2);
@@ -154,7 +206,14 @@ namespace {
         return ast1.isSimilar(ast2);
     }
 
-    // Function to check for duplicate specializations based on AST with commutativity
+    /**
+     * @brief Checks for duplicate function specializations based on AST similarity.
+     * 
+     * This function scans a collection of functions, compares their ASTs, and removes
+     * any functions that are deemed duplicates based on their structural similarity.
+     * 
+     * @param functions A map of function names to FuncOps representing the functions to check
+     */
     void checkForDuplicateSpecializationsAST(std::unordered_map<std::string, func::FuncOp> &functions) {
         std::unordered_map<std::string, func::FuncOp> astToOriginalMap;  // To track duplicates
 
