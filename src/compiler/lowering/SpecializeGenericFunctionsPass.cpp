@@ -38,7 +38,24 @@
 using namespace mlir;
 
 namespace {
+    
 
+    std::string getIRString(func::FuncOp funcOp) {
+        std::string irString;
+        llvm::raw_string_ostream stream(irString);
+        funcOp.print(stream);
+        return irString;
+    }
+    std::vector<std::string> splitIntoLines(const std::string &str) {
+        std::vector<std::string> lines;
+        std::stringstream ss(str);
+        std::string line;
+
+        while (std::getline(ss, line, '\n')) {
+            lines.push_back(line);
+        }
+        return lines;
+    }
     /**
      * @brief Checks if the function is untyped, i.e., if at least one of the inputs is
      * of unknown type.
@@ -456,6 +473,7 @@ namespace {
         std::vector<std::string> callStack;
         std::map<std::string, std::string> duplicateFunctions;
 
+        std::map<func::FuncOp, std::vector<std::string>> IRRepresentations;
         // Can store all callOps in a list
         
         const DaphneUserConfig& userConfig;
@@ -646,6 +664,7 @@ namespace {
                 std::cout << std::endl;
             }
             std::cout << std::endl;
+            IRRepresentations[specializedFunc] = splitIntoLines(getIRString(specializedFunc));
             printCallGraph();
             return inferTypesInFunction(specializedFunc);
         }
@@ -713,17 +732,18 @@ namespace {
                 );
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     auto specializedTypes = getSpecializedFuncArgTypes(calledFunction.getFunctionType(), callOp.getOperandTypes(), calledFunction.getSymName().str(), callOp.getLoc()); 
-                    std::string calledFuncName = uniqueSpecializedFuncName(calledFunction.getSymName().str(), specializedTypes,callOp.getOperands());
-                    //func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());                    
-                    // ToDo also update multiple cycles if it applies!
-                    //std::cout << "Called function: " << specializedFunc.getName().str() << " Callee: " << function.getName().str() << std::endl;
+                    std::string calledFuncName;
+                    std::string specializedName = uniqueSpecializedFuncName(calledFunction.getSymName().str(), specializedTypes,callOp.getOperands());
                     std::set<std::string> callPath;
                     std::string functionName = function.getName().str();
 
+
+                    // Begin section checking for recursion
+
                     // Clean the func names from the specialized part (we only look at template functions!)
-                    size_t pos = calledFuncName.find('('); // we just want a-1 and not a-1(1)
+                    size_t pos = specializedName.find('('); // we just want a-1 and not a-1(1)
                     if (pos != std::string::npos) {
-                        calledFuncName =  calledFuncName.substr(0, pos);    
+                        calledFuncName =  specializedName.substr(0, pos);    
                     }
                     pos = functionName.find('(');
                     if (pos != std::string::npos) {
@@ -738,23 +758,54 @@ namespace {
                         // Check if `callPath` is a subset of `it`
                         if (std::includes(it.begin(), it.end(), callPath.begin(), callPath.end())) {
                             if(recursiveCallsNum[it] > 5) {
-                                std::cout << "I AM NOT SPECIAlIZING " << calledFuncName << "!" << std::endl;
                                 specialize=false;
                             }
                             recursiveCallsNum[it] += 1;
-                            std::cout << functionName << " CALLED " << calledFuncName << " AND IT IS INCLUDED IN A CYCLE!" << std::endl;
-                        } else {
-                            std::cout << functionName << " CALLED " << calledFuncName << " AND IT IS NOT INCLUDED IN A CYCLE!" << std::endl;
-                        }
+                        } 
                     }
+
+
+                    // Begin section duplicate function detection
+
+
                     if(specialize) {
                         func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
                         callOp.setCalleeAttr(specializedFunc.getSymNameAttr()); 
                         if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                             inferTypesInFunction(function);
                         }
-                        specializeCallsInFunction(specializedFunc);
-                        called.insert(specializedFunc);
+                        bool equal = IRRepresentations.size() != 0; //Make sure it is false when no IRRepresentations are present
+                        func::FuncOp equalFunc;
+                        std::vector<std::string> specializedFuncIR = splitIntoLines(getIRString(specializedFunc));
+                        for (auto it = IRRepresentations.begin(); it != IRRepresentations.end(); ++it) {
+                            if(it->second.size() == specializedFuncIR.size() && it->first != specializedFunc) {
+                                for (int i=0;i<it->second.size();i++) {
+                                    if(it->second[i]!=specializedFuncIR[i]) {
+                                        equal = false;
+                                        break;
+                                    } else {
+                                        std::cout << "The line: \n" << it->second[i] << "\n is the same as: \n" << specializedFuncIR[i] << std::endl ;
+                                    }
+                                }
+                                if(equal) {
+                                    equalFunc = it->first;
+                                    break;
+                                }
+                            }
+                        }
+                        if(equal) {
+                            callOp.setCalleeAttr(equalFunc.getSymNameAttr());
+                            if(fixResultTypes(callOp->getResults(), equalFunc.getFunctionType())) {
+                                inferTypesInFunction(function);
+                            }
+                            //specializedFunc.erase();
+                            functions.erase(specializedFunc.getSymName().str());
+
+                        } else {
+                            specializeCallsInFunction(specializedFunc);
+                            called.insert(specializedFunc);
+                        }
+
                     } else {
                         functions.insert({calledFuncName, calledFunction});
                         callOp.setCalleeAttr(calledFunction.getSymNameAttr());
@@ -854,7 +905,6 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         entryFunctions.push_back(entry.second);
     }
 
-
     for(const auto &function : entryFunctions) {
         if(isFunctionTemplate(function) || visited.count(function) || templateFunctions.count(function))
             continue;
@@ -865,18 +915,6 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         }
         specializeCallsInFunction(function);
     }
-
-    // Delete non-called functions.
-    /*
-    for(auto f : functions) {
-        // Never remove the main or dist function.
-        if(f.first == "main" or f.first == "dist")
-            continue;
-        // Remove a function that was present before creating specializations,
-        // if it is never called.
-        if(!called.count(f.second) || templateFunctions.count(f.second))
-            f.second.erase();
-    }*/
 }
 
 std::unique_ptr<Pass> daphne::createSpecializeGenericFunctionsPass(const DaphneUserConfig& cfg) {
