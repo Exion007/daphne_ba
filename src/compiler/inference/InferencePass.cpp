@@ -498,9 +498,11 @@ public:
                 "InferencePass.cpp:" + std::to_string(__LINE__), re.what());
         }
         // infer function return types
+        f.getBody().getBlocks().size();
         f.setType(FunctionType::get(&getContext(),
             f.getFunctionType().getInputs(),
             f.getBody().back().getTerminator()->getOperandTypes()));
+    
     }
 
     static bool returnsUnknownType(Operation *op) {
