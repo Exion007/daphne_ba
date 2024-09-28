@@ -1,0 +1,8 @@
+
+def a(n: si64) -> si64 {
+	if(n <= 0)
+		return 0;
+	return a(n-1);
+}
+
+print(a($n));
