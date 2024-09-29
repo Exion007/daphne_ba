@@ -328,7 +328,6 @@ antlrcpp::Any DaphneDSLVisitor::visitBlockStatement(DaphneDSLGrammarParser::Bloc
     symbolTable.pushScope();
     antlrcpp::Any res = visitChildren(ctx);
     symbolTable.put(symbolTable.popScope());
-    std::cout << std::endl;
     return res;
 }
 
@@ -2207,7 +2206,6 @@ antlrcpp::Any DaphneDSLVisitor::visitFunctionStatement(DaphneDSLGrammarParser::F
     // HERE IT CHECKS
     visitBlockStatement(ctx->bodyStmt);
     rectifyEarlyReturns(funcBlock);
-    std::cout << std::endl;
     // Here
     if(funcBlock->getOperations().empty() || !funcBlock->getOperations().back().hasTrait<mlir::OpTrait::IsTerminator>()) {
         builder.create<mlir::daphne::ReturnOp>(utils.getLoc(ctx->stop));
