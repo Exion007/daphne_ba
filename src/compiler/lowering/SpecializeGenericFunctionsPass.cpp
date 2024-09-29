@@ -34,159 +34,40 @@
 #include <algorithm>
 #include <iostream>
 #include <regex>
+#include <openssl/sha.h>
 
 using namespace mlir;
 
 namespace {
-
-
-
-    /*=========================================================*/
-    // Define a set of commutative operations
-    const std::set<std::string> commutativeOps = {"+", "*"};
-
-    // Create an AST node representation of an operation
-    struct ASTNode {
-        std::string opName;
-        std::vector<ASTNode> children;
-
-        ASTNode(std::string op) : opName(op) {}
-
-        // Add child to the AST node
-        void addChild(const ASTNode &child) {
-            children.push_back(child);
-        }
-
-        // Sort the children if the operation is commutative
-        void sortChildrenIfNeeded() {
-            if (commutativeOps.find(opName) != commutativeOps.end()) {
-                // Sort the children alphabetically based on their opName
-                std::sort(children.begin(), children.end(), [](const ASTNode &a, const ASTNode &b) {
-                    return a.opName < b.opName;
-                });
-            }
-        }
-
-        // Compare two AST nodes (and their children recursively)
-        bool isSimilar(const ASTNode &other) const {
-            if (opName != other.opName || children.size() != other.children.size())
-                return false;
-
-            for (size_t i = 0; i < children.size(); ++i) {
-                if (!children[i].isSimilar(other.children[i]))
-                    return false;
-            }
-            return true;
-        }
-    };
-
-    // Recursively build an AST from the function operations
-    ASTNode buildASTFromFunction(func::FuncOp func) {
-        ASTNode root(func.getSymName().str());
-
-        func.walk([&](Operation *op) {
-            ASTNode node(op->getName().getStringRef().str());
-
-            // Add child nodes for operands
-            for (auto operand : op->getOperands()) {
-                if (auto defOp = operand.getDefiningOp()) {
-                    node.addChild(ASTNode(defOp->getName().getStringRef().str()));
-                }
-            }
-
-            // Sort the children if the operation is commutative
-            node.sortChildrenIfNeeded();
-
-            // Add this node to the root's children
-            root.addChild(node);
-        });
-
-        return root;
-    }
-
-    void replaceConstantsWithVariables(func::FuncOp func) {
-    OpBuilder builder(func.getBody());
-
-    // Track new argument types and body updates
-    // Template vectors are initially optimized for up to 4 elements without heap allocation, but they can grow dynamically beyond that if needed.
-    SmallVector<Type, 4> newArgTypes;
-    SmallVector<Value, 4> newArgs;
-    bool hasConstant = false;
-
-    // For every argument in the function, check if it's a constant and convert it
-    func.walk([&](Operation *op) {
-        builder.setInsertionPoint(op);
-        for (auto operand : op->getOperands()) {
-            if (auto constantOp = CompilerUtils::constantOfAnyType(operand)) {
-                // Generate a new variable for the constant
-                auto loc = op->getLoc();
-                Type type = operand.getType();
-                std::string newVarName = "var" + std::to_string(newArgTypes.size());
-
-                // Create a new argument for the function with this variable
-                Block &body = func.getBody().front();
-                auto newArg = body.addArgument(type, loc);
-
-                newArgTypes.push_back(type);
-                newArgs.push_back(newArg);
-
-                // Replace all uses of the constant with the new variable
-                operand.replaceAllUsesWith(newArg);
-                hasConstant = true;
-            }
-        }
-    });
-
-    if (hasConstant) {
-        // Adjust the function type with new arguments if constants were replaced
-        auto funcType = func.getFunctionType();
-        auto newFuncType = builder.getFunctionType(newArgTypes, funcType.getResults());
-        func.setType(newFuncType);
-    }
-}
-
-    // Compare two functions based on their AST structures
-    bool areFunctionsSimilarAST(func::FuncOp func1, func::FuncOp func2) {
-        ASTNode ast1 = buildASTFromFunction(func1);
-        ASTNode ast2 = buildASTFromFunction(func2);
-
-        // Compare the ASTs of the two functions
-        return ast1.isSimilar(ast2);
-    }
-
-    // Function to check for duplicate specializations based on AST with commutativity
-    void checkForDuplicateSpecializationsAST(std::unordered_map<std::string, func::FuncOp> &functions) {
-        std::unordered_map<std::string, func::FuncOp> astToOriginalMap;  // To track duplicates
-
-        for (auto it = functions.begin(); it != functions.end();) {
-            const std::string &funcName = it->first;
-            func::FuncOp funcOp = it->second;
-
-            bool foundDuplicate = false;
-            
-            // Compare with existing functions based on AST similarity
-            for (const auto &entry : astToOriginalMap) {
-                func::FuncOp existingFunc = entry.second;
-                if (areFunctionsSimilarAST(funcOp, existingFunc)) {
-                    // A duplicate function was found
-                    foundDuplicate = true;
-                    break;
-                }
-            }
-
-            if (foundDuplicate) {
-                // Delete the duplicate function
-                it = functions.erase(it);  // Erase returns the next iterator
-            } else {
-                // If the function is unique, store its AST
-                astToOriginalMap[funcName] = funcOp;
-                ++it;  // Move to the next function
-            }
-        }
-    }
-
-    /*=========================================================*/
     
+    // Helper function to generate a hash from a string (using SHA256)
+    std::string hashIRString(const std::string &irString) {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256((unsigned char*)irString.c_str(), irString.size(), hash);
+
+        std::stringstream ss;
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+        return ss.str();
+    }
+
+    std::string getIRString(func::FuncOp funcOp) {
+        std::string irString;
+        llvm::raw_string_ostream stream(irString);
+        funcOp.print(stream);
+        return irString;
+    }
+    std::vector<std::string> splitIntoLines(const std::string &str) {
+        std::vector<std::string> lines;
+        std::stringstream ss(str);
+        std::string line;
+
+        while (std::getline(ss, line, '\n')) {
+            lines.push_back(line);
+        }
+        return lines;
+    }
     /**
      * @brief Checks if the function is untyped, i.e., if at least one of the inputs is
      * of unknown type.
@@ -251,7 +132,6 @@ namespace {
             std::string valueName = valueStream.str();
 
             // Append type and value to the general name
-            //std::cout << name << " | " << valueName << std::endl;
             name +=  valueName;
         }
         std::string output = functionName + '(';
@@ -328,177 +208,6 @@ namespace {
         }
 
         return normalizedLine;
-    }
-
-    /**
-     * @brief Normalizes the entire function body by replacing variables, constants, 
-     * and commutative operations, and ignoring non-essential lines.
-     * 
-     * This function processes each line of a function body, normalizing variable names,
-     * replacing constants with "CONST", and reordering operands in commutative operations.
-     * It also skips over non-essential lines, like those containing logging statements.
-     * 
-     * @param body A vector of strings, where each string is a line of the function body.
-     * @return A vector of strings representing the normalized function body.
-     * 
-     * @example
-     * std::vector<std::string> body = {"int x = 5 + y;", "log('test');", "float z = x + 10;"};
-     * std::vector<std::string> normalizedBody = normalizeFunctionBody(body);
-     * // normalizedBody will be: {"TYPE var0 = CONST + var1;", "TYPE var2 = var0 + CONST;"}
-     */
-    std::vector<std::string> normalizeFunctionBody(const std::vector<std::string> &body) {
-        std::unordered_map<std::string, std::string> variableMapping;
-        int variableCounter = 0;
-        std::vector<std::string> normalizedBody;
-
-        for (const auto &line : body) {
-            std::string normalizedLine = line;
-
-            // Ignore non-essential lines like logging
-            if (line.find("log") != std::string::npos) {
-                continue; // Skip lines that include "log" (for simplicity)
-            }
-
-            // Normalize data types (replace 'int' and 'float' with 'TYPE')
-            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\b(int|float|double|char|long)\b)"), "TYPE");
-
-            // Normalize variables
-            std::vector<std::string> variables = extractVariablesFromLine(line);
-            for (const auto &var : variables) {
-                if (variableMapping.find(var) == variableMapping.end()) {
-                    variableMapping[var] = "var" + std::to_string(variableCounter++);
-                }
-                // Use word boundaries to replace exact matches
-                normalizedLine = std::regex_replace(normalizedLine, std::regex("\\b" + var + "\\b"), variableMapping[var]);
-            }
-
-            // Normalize constants (replace numeric literals with "CONST")
-            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\b\d+\b)"), "CONST");
-
-            // Normalize commutative operations
-            normalizedLine = normalizeCommutativeOperations(normalizedLine);
-
-            // Remove extra whitespace
-            normalizedLine = std::regex_replace(normalizedLine, std::regex(R"(\s+)"), " ");
-
-            normalizedBody.push_back(normalizedLine);
-        }
-
-        return normalizedBody;
-    }
-
-    /**
-     * @brief Compares two function bodies after normalization to check if they are similar.
-     * 
-     * This function normalizes both function bodies (replacing variables, constants, 
-     * and normalizing commutative operations) and then checks if the normalized versions
-     * of both functions are identical.
-     * 
-     * @param body1 The first function body (vector of strings).
-     * @param body2 The second function body (vector of strings).
-     * @return true if the two function bodies are similar after normalization, false otherwise.
-     * 
-     * @example
-     * std::vector<std::string> body1 = {"int a = b + c;", "float d = a + 10;"};
-     * std::vector<std::string> body2 = {"float x = y + z;", "int w = x + 5;"};
-     * bool areSimilar = areFunctionsSimilar(body1, body2);
-     * // areSimilar will be true because the functions are similar after normalization.
-     */
-    bool areFunctionsSimilar(const std::vector<std::string> &body1, const std::vector<std::string> &body2) {
-        std::vector<std::string> normalizedBody1 = normalizeFunctionBody(body1);
-        std::vector<std::string> normalizedBody2 = normalizeFunctionBody(body2);
-
-        return normalizedBody1.size() == normalizedBody2.size() &&
-            std::equal(normalizedBody1.begin(), normalizedBody1.end(), normalizedBody2.begin());
-    }
-
-    /**
-     * @brief Extracts the body of a function as a vector of strings.
-     * 
-     * This function walks through each operation in the function and collects 
-     * the operation as a string in a vector. Each operation corresponds to a line in the function.
-     * 
-     * @param func The function from which to extract the body (as a `FuncOp`).
-     * @return A vector of strings where each string represents a line of the function body.
-     * 
-     * @example
-     * func::FuncOp func = ...; // Assuming func is initialized elsewhere
-     * std::vector<std::string> body = getFunctionBody(func);
-     * // body might look like: {"int foo(int x) {", "return x + 5;", "}"}
-     */
-    std::vector<std::string> getFunctionBody(func::FuncOp func) {
-        std::vector<std::string> body;
-        func.walk([&](Operation *op) {
-            std::string line;
-            llvm::raw_string_ostream os(line);
-            op->print(os);
-            body.push_back(line);
-        });
-        return body;
-    }
-
-    /**
-     * @brief Checks if specialized versions of functions already exist by comparing their normalized bodies.
-     * 
-     * This function iterates through a map of functions, normalizes their bodies, and compares 
-     * the normalized bodies. If a similar function (with the same normalized body) already exists, 
-     * it skips the specialization process for that function.
-     * 
-     * @param functions A map where the key is the function name and the value is the function (`FuncOp`).
-     * 
-     * @example
-     * std::unordered_map<std::string, func::FuncOp> functions = ...;
-     * checkForDuplicateSpecializations(functions);
-     * // This will identify and skip functions that are redundant due to having similar bodies.
-     */
-    void checkForDuplicateSpecializations(std::unordered_map<std::string, func::FuncOp> &functions) {
-        std::unordered_map<std::string, std::string> normalizedToOriginalMap; // To track duplicates
-
-        for (auto it = functions.begin(); it != functions.end();) {
-            const std::string &funcName = it->first;
-            func::FuncOp funcOp = it->second;
-
-            std::vector<std::string> funcBody = getFunctionBody(funcOp);
-            std::vector<std::string> normalizedBody = normalizeFunctionBody(funcBody);
-
-            // Convert normalized body to a single string for easy comparison
-            std::string normalizedBodyStr;
-            for (const auto &line : funcBody) {
-                if(line.find("daphne.generic_call") == std::string::npos){
-                    normalizedBodyStr += line + "\n"; 
-                }
-            }
-
-            //std::cout << "Function: " << funcName << "Body String: ";
-            //std::cout << normalizedBodyStr << std::endl << std::endl;
-            // Check if this normalized body already exists
-            if (normalizedToOriginalMap.find(normalizedBodyStr) != normalizedToOriginalMap.end()) {
-                std::string existingFuncName = normalizedToOriginalMap[normalizedBodyStr];
-                //std::cout << "Function " << funcName << " is similar to " << existingFuncName << ". Deleting this function." << std::endl;
-                // Erase the current function as it is a duplicate
-                it = functions.erase(it); // Erase returns the next iterator
-            } else {
-                // If the function is unique, store its normalized body
-                normalizedToOriginalMap[normalizedBodyStr] = funcName;
-                ++it; // Move to the next function
-            }
-        }
-    }
-    /**
-     * @brief Check if a function with the given input/output types can be called with the input types given.
-     * @param functionType The type of the function
-     * @param callTypes The types used in the call
-     * @return true if the types match for a call, false otherwise
-     */
-    bool callTypesMatchFunctionTypes(FunctionType functionType, TypeRange callTypes) {
-        for(auto zipIt : llvm::zip(functionType.getInputs(), callTypes)) {
-            auto funcTy = std::get<0>(zipIt);
-            auto callTy = std::get<1>(zipIt);
-            // Note that we explicitly take all properties (e.g., shape) into account.
-            if(funcTy != callTy)
-                return false;
-        }
-        return true;
     }
 
     /**
@@ -603,7 +312,8 @@ namespace {
         std::set<std::string> visitedInGraph;
         std::vector<std::string> callStack;
         std::map<std::string, std::string> duplicateFunctions;
-
+        std::unordered_map<std::string, func::FuncOp> hashToFuncMap;
+        std::map<func::FuncOp, std::vector<std::string>> IRRepresentations;
         // Can store all callOps in a list
         
         const DaphneUserConfig& userConfig;
@@ -660,24 +370,6 @@ namespace {
                 detectRecursion(entry.first, visitedInGraph, callStack);
             }
         }
-        /**
-         * @brief Print the callgraph  -> Debugging Purposes!!     
-         */
-        void printCallGraph() {
-            for(const auto &entry : callGraph) {
-                std::string funcName = entry.first;
-                //std::cout << funcName << " #!#!#calls:#!#!# ";
-                if(entry.second.empty()) {
-                    //std::cout << "No functions";
-                } else {
-                    for (const std::string &calledFuncName : entry.second) {
-                        //std::cout << calledFuncName << " ";
-                    }
-                }
-                //std::cout << std::endl;
-            }
-            //std::cout<<std::endl<<std::endl;
-        }
 
 
 
@@ -689,20 +381,16 @@ namespace {
          */
         void updateCallGraph(func::FuncOp func) {
             // Get the module containing this function
-            auto module = func->getParentOfType<ModuleOp>();
-
             std::string funcName = func.getName().str();
             size_t pos = funcName.find('(');
             if (pos != std::string::npos) {
                 funcName =  funcName.substr(0, pos);    
             }
-            //std::cout << "FUNCNAME DEBUG: " << funcName << std::endl;
             // Initialize the entry for this function in the call graph if not already present
             if (callGraph.find(funcName) == callGraph.end()) {
                 callGraph[funcName] = {};
             } else {
                 // If it was initialized already, return immediately. Specialized functions always call the same!
-                //std::cout << "RETURNING CAUSE " << funcName << " IS ALREADY INITIALIZED!" << std::endl;
                 return;
             }
             func.walk([&](Operation *op) {
@@ -742,7 +430,6 @@ namespace {
         func::FuncOp createSpecializedFunction(func::FuncOp templateFunction, TypeRange specializedTypes, ValueRange operands) {
             OpBuilder builder(templateFunction);
             auto specializedFunc = templateFunction.clone();
-            //std::cout << "BUILDER INSERT (createSpecializedFunction)" << std::endl;
             builder.insert(specializedFunc);
             auto uniqueFuncName = uniqueSpecializedFuncName(templateFunction.getSymName().str(), specializedTypes, operands);
             specializedFunc.setName(uniqueFuncName);
@@ -767,9 +454,7 @@ namespace {
                     if(Operation * co = CompilerUtils::constantOfAnyType(v)) {
                         // Clone the constant operation into the function body.
                         Operation * coNew = co->clone();
-                        //std::cout << "BUILDER INSERT (createSpecializedFunction 2), Name: " << coNew->getName().getStringRef().data() << std::endl;
-                        builder.insert(coNew);
-                        //std::cout << "BUILDER INSERT (createSpecializedFunction 2) FINISHED" << std::endl;
++                        builder.insert(coNew);
                         // Replace all uses of the corresponding block argument by the newly inserted constant.
                         specializedFuncBodyBlock.getArgument(i).replaceAllUsesWith(coNew->getResult(0));
                         // TODO We could even remove the corresponding function argument.
@@ -784,17 +469,8 @@ namespace {
                 specializedVersions.insert({templateFunction.getSymName().str(), specializedFunc});
             
             updateCallGraph(inferTypesInFunction(specializedFunc));
-
             findRecursions();
-            for (const auto& cycle : recursiveCalls) {
-                std::cout << "Cycle detected: ";
-                for (const auto& func : cycle) {
-                    std::cout << func << " ";
-                }
-                std::cout << std::endl;
-            }
-            std::cout << std::endl;
-            printCallGraph();
+            IRRepresentations[specializedFunc] = splitIntoLines(getIRString(specializedFunc));
             return inferTypesInFunction(specializedFunc);
         }
 
@@ -850,6 +526,7 @@ namespace {
                 return;
             }
             visited.insert(function);
+
             // Specialize all functions called directly
             function.walk([&](daphne::GenericCallOp callOp) {
                 auto calledFunction = functions[callOp.getCallee().str()];
@@ -859,19 +536,21 @@ namespace {
                             return CompilerUtils::constantOfAnyType(v) != nullptr;
                         }
                 );
+
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     auto specializedTypes = getSpecializedFuncArgTypes(calledFunction.getFunctionType(), callOp.getOperandTypes(), calledFunction.getSymName().str(), callOp.getLoc()); 
-                    std::string calledFuncName = uniqueSpecializedFuncName(calledFunction.getSymName().str(), specializedTypes,callOp.getOperands());
-                    //func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());                    
-                    // ToDo also update multiple cycles if it applies!
-                    //std::cout << "Called function: " << specializedFunc.getName().str() << " Callee: " << function.getName().str() << std::endl;
+                    std::string calledFuncName;
+                    std::string specializedName = uniqueSpecializedFuncName(calledFunction.getSymName().str(), specializedTypes,callOp.getOperands());
                     std::set<std::string> callPath;
                     std::string functionName = function.getName().str();
 
+
+                    // Begin section checking for recursion
+
                     // Clean the func names from the specialized part (we only look at template functions!)
-                    size_t pos = calledFuncName.find('('); // we just want a-1 and not a-1(1)
+                    size_t pos = specializedName.find('('); // we just want a-1 and not a-1(1)
                     if (pos != std::string::npos) {
-                        calledFuncName =  calledFuncName.substr(0, pos);    
+                        calledFuncName =  specializedName.substr(0, pos);    
                     }
                     pos = functionName.find('(');
                     if (pos != std::string::npos) {
@@ -885,28 +564,63 @@ namespace {
   
                         // Check if `callPath` is a subset of `it`
                         if (std::includes(it.begin(), it.end(), callPath.begin(), callPath.end())) {
-                            if(recursiveCallsNum[it] > 5) {
-                                std::cout << "I AM NOT SPECIAlIZING " << calledFuncName << "!" << std::endl;
+                            if(recursiveCallsNum[it] >= 5) {
                                 specialize=false;
                             }
                             recursiveCallsNum[it] += 1;
-                            std::cout << functionName << " CALLED " << calledFuncName << " AND IT IS INCLUDED IN A CYCLE!" << std::endl;
-                        } else {
-                            std::cout << functionName << " CALLED " << calledFuncName << " AND IT IS NOT INCLUDED IN A CYCLE!" << std::endl;
-                        }
+                        } 
                     }
-                    if(specialize) {
+
+
+                    // Begin section duplicate function detection
+
+
+                    if (specialize) {
+                        // Canonicalize the called function using MLIR's built-in canonicalizer
                         func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
-                        callOp.setCalleeAttr(specializedFunc.getSymNameAttr()); 
-                        if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
-                            inferTypesInFunction(function);
+
+                        mlir::PassManager pm(function.getContext());
+                        pm.addPass(mlir::createCanonicalizerPass());
+                        if (failed(pm.run(specializedFunc))) {
+                            throw std::runtime_error("Failed to canonicalize called function.");
                         }
-                        specializeCallsInFunction(specializedFunc);
-                        called.insert(specializedFunc);
+
+                        // Get the canonicalized IR as a string
+                        std::vector<std::string> canonicalIRLines = splitIntoLines(getIRString(specializedFunc));
+
+                        canonicalIRLines.erase(canonicalIRLines.begin()); // First line includes the func name -> Not needed it changes the hash
+
+                        std::string canonicalIR = std::accumulate(canonicalIRLines.begin(), canonicalIRLines.end(), std::string());
+
+                        // Hash the canonicalized IR string
+                        std::string hash = hashIRString(canonicalIR);
+
+                        // Check if this specialization already exists using the hash
+                        if (hashToFuncMap.count(hash) && hashToFuncMap[hash].getName().str() != specializedFunc.getName().str()) {
+                            // Reuse existing function
+                            func::FuncOp existingFunc = hashToFuncMap[hash];
+                            callOp.setCalleeAttr(existingFunc.getSymNameAttr());
+                            if (fixResultTypes(callOp->getResults(), existingFunc.getFunctionType())) {
+                                inferTypesInFunction(function);
+                            }
+                            specializedFunc.erase();
+                            functions.erase(specializedName);
+                            called.insert(existingFunc);
+                        } else {
+                            callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
+                            if (fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
+                                inferTypesInFunction(function);
+                            }
+                            specializeCallsInFunction(specializedFunc);
+                            called.insert(specializedFunc);
+
+                            // Store the hash and the canonicalized IR for future reuse
+                            hashToFuncMap[hash] = specializedFunc;
+                        }
                     } else {
                         functions.insert({calledFuncName, calledFunction});
                         callOp.setCalleeAttr(calledFunction.getSymNameAttr());
-                        if(fixResultTypes(callOp->getResults(), calledFunction.getFunctionType())) {
+                        if (fixResultTypes(callOp->getResults(), calledFunction.getFunctionType())) {
                             inferTypesInFunction(function);
                         }
                         specializeCallsInFunction(calledFunction);
@@ -1002,14 +716,6 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
         entryFunctions.push_back(entry.second);
     }
 
-    // Replace constants in each function before specialization
-    for (auto &entry : functions) {
-        replaceConstantsWithVariables(entry.second); // Replaces constants with variables
-    }
-
-    // Before specializing, check for duplicates using AST-based comparison
-    checkForDuplicateSpecializationsAST(functions);
-
     for(const auto &function : entryFunctions) {
         if(isFunctionTemplate(function) || visited.count(function) || templateFunctions.count(function))
             continue;
@@ -1022,16 +728,16 @@ void SpecializeGenericFunctionsPass::runOnOperation() {
     }
 
     // Delete non-called functions.
-    /*
     for(auto f : functions) {
         // Never remove the main or dist function.
         if(f.first == "main" or f.first == "dist")
             continue;
         // Remove a function that was present before creating specializations,
         // if it is never called.
-        if(!called.count(f.second) || templateFunctions.count(f.second))
+        if(!called.count(f.second)) {
             f.second.erase();
-    }*/
+        }
+    }
 }
 
 std::unique_ptr<Pass> daphne::createSpecializeGenericFunctionsPass(const DaphneUserConfig& cfg) {

@@ -1,0 +1,21 @@
+def a(n: si64) -> si64 {
+	if(n>5) {
+		x = n*10;
+		return 5*x;
+	} else {
+		return 0;
+	}
+}
+
+def b(n: si64) -> si64 {
+	if(n>1) {
+		y = 10*n;
+		return y*5;
+	} else {
+		return 0;
+	}
+}
+
+
+print(b($n));
+print(a($n));

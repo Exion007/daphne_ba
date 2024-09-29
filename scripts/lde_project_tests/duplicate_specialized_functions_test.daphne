@@ -1,0 +1,35 @@
+def a(n: si64) -> si64 {
+	if(n>5) {
+		x = n*10;
+		return 5*x;
+	} else {
+		return 0;
+	}
+}
+
+
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+print(a($n));
+
