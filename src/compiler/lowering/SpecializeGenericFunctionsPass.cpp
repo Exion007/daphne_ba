@@ -34,11 +34,40 @@
 #include <algorithm>
 #include <iostream>
 #include <regex>
+#include <openssl/sha.h>
 
 using namespace mlir;
 
 namespace {
     
+    // Helper function to generate a hash from a string (using SHA256)
+    std::string hashIRString(const std::string &irString) {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256((unsigned char*)irString.c_str(), irString.size(), hash);
+
+        std::stringstream ss;
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+        return ss.str();
+    }
+
+    // Apply MLIR's built-in canonicalization pass to simplify the function
+    void canonicalizeFunction(func::FuncOp funcOp) {
+        mlir::PassManager pm(funcOp.getContext());
+        pm.addPass(mlir::createCanonicalizerPass());  // Use MLIR's built-in canonicalizer
+        if (failed(pm.run(funcOp))) {
+            throw std::runtime_error("Failed to canonicalize function.");
+        }
+    }
+
+    // Function to get the canonicalized IR string after running the canonicalizer
+    std::string getCanonicalIRString(func::FuncOp funcOp) {
+        std::string irString;
+        llvm::raw_string_ostream stream(irString);
+        funcOp.print(stream);  // Get the function IR as a string
+        return irString;
+    }
 
     std::string getIRString(func::FuncOp funcOp) {
         std::string irString;
@@ -472,7 +501,7 @@ namespace {
         std::set<std::string> visitedInGraph;
         std::vector<std::string> callStack;
         std::map<std::string, std::string> duplicateFunctions;
-
+        std::unordered_map<std::string, func::FuncOp> hashToFuncMap;
         std::map<func::FuncOp, std::vector<std::string>> IRRepresentations;
         // Can store all callOps in a list
         
@@ -721,6 +750,7 @@ namespace {
                 return;
             }
             visited.insert(function);
+
             // Specialize all functions called directly
             function.walk([&](daphne::GenericCallOp callOp) {
                 auto calledFunction = functions[callOp.getCallee().str()];
@@ -730,6 +760,7 @@ namespace {
                             return CompilerUtils::constantOfAnyType(v) != nullptr;
                         }
                 );
+
                 if(isFunctionTemplate(calledFunction) || hasConstantInput) {
                     auto specializedTypes = getSpecializedFuncArgTypes(calledFunction.getFunctionType(), callOp.getOperandTypes(), calledFunction.getSymName().str(), callOp.getLoc()); 
                     std::string calledFuncName;
@@ -768,48 +799,46 @@ namespace {
                     // Begin section duplicate function detection
 
 
-                    if(specialize) {
-                        func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
-                        callOp.setCalleeAttr(specializedFunc.getSymNameAttr()); 
-                        if(fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
-                            inferTypesInFunction(function);
+                    if (specialize) {
+                        // Canonicalize the called function using MLIR's built-in canonicalizer
+                        mlir::PassManager pm(function.getContext());
+                        pm.addPass(mlir::createCanonicalizerPass());
+                        if (failed(pm.run(calledFunction))) {
+                            throw std::runtime_error("Failed to canonicalize called function.");
                         }
-                        bool equal = IRRepresentations.size() != 0; //Make sure it is false when no IRRepresentations are present
-                        func::FuncOp equalFunc;
-                        std::vector<std::string> specializedFuncIR = splitIntoLines(getIRString(specializedFunc));
-                        for (auto it = IRRepresentations.begin(); it != IRRepresentations.end(); ++it) {
-                            if(it->second.size() == specializedFuncIR.size() && it->first != specializedFunc) {
-                                for (int i=0;i<it->second.size();i++) {
-                                    if(it->second[i]!=specializedFuncIR[i]) {
-                                        equal = false;
-                                        break;
-                                    } else {
-                                        std::cout << "The line: \n" << it->second[i] << "\n is the same as: \n" << specializedFuncIR[i] << std::endl ;
-                                    }
-                                }
-                                if(equal) {
-                                    equalFunc = it->first;
-                                    break;
-                                }
-                            }
-                        }
-                        if(equal) {
-                            callOp.setCalleeAttr(equalFunc.getSymNameAttr());
-                            if(fixResultTypes(callOp->getResults(), equalFunc.getFunctionType())) {
+
+                        // Get the canonicalized IR as a string
+                        std::string canonicalIR = getIRString(calledFunction);
+
+                        // Hash the canonicalized IR string
+                        std::string hash = hashIRString(canonicalIR);
+
+                        // Check if this specialization already exists using the hash
+                        if (hashToFuncMap.count(hash)) {
+                            // Reuse existing function
+                            func::FuncOp existingFunc = hashToFuncMap[hash];
+                            callOp.setCalleeAttr(existingFunc.getSymNameAttr());
+                            if (fixResultTypes(callOp->getResults(), existingFunc.getFunctionType())) {
                                 inferTypesInFunction(function);
                             }
-                            //specializedFunc.erase();
-                            functions.erase(specializedFunc.getSymName().str());
-
                         } else {
+                            // Create a new specialized function
+                            func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
+                            callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
+                            if (fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
+                                inferTypesInFunction(function);
+                            }
                             specializeCallsInFunction(specializedFunc);
                             called.insert(specializedFunc);
-                        }
 
+                            // Store the hash and the canonicalized IR for future reuse
+                            hashToFuncMap[hash] = specializedFunc;
+                            IRRepresentations[specializedFunc] = splitIntoLines(canonicalIR);
+                        }
                     } else {
                         functions.insert({calledFuncName, calledFunction});
                         callOp.setCalleeAttr(calledFunction.getSymNameAttr());
-                        if(fixResultTypes(callOp->getResults(), calledFunction.getFunctionType())) {
+                        if (fixResultTypes(callOp->getResults(), calledFunction.getFunctionType())) {
                             inferTypesInFunction(function);
                         }
                         specializeCallsInFunction(calledFunction);
