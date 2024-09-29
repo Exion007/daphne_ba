@@ -588,7 +588,14 @@ namespace {
                         // Get the canonicalized IR as a string
                         std::vector<std::string> canonicalIRLines = splitIntoLines(getIRString(specializedFunc));
 
-                        canonicalIRLines.erase(canonicalIRLines.begin()); // First line includes the func name -> Not needed it changes the hash
+                        // Only keep function signature, ignore name 
+                        size_t firstQuote = canonicalIRLines[0].find('"');
+                        if(firstQuote != std::string::npos) {
+                            size_t secondQuote = canonicalIRLines[0].find('"', firstQuote+1);
+                            if(secondQuote != std::string::npos) {
+                                canonicalIRLines[0] = canonicalIRLines[0].substr(secondQuote+1);
+                            }
+                        }
 
                         std::string canonicalIR = std::accumulate(canonicalIRLines.begin(), canonicalIRLines.end(), std::string());
 
