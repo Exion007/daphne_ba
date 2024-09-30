@@ -40,7 +40,17 @@ using namespace mlir;
 
 namespace {
     
-    // Helper function to generate a hash from a string (using SHA256)
+    /**
+     * @brief Generates a SHA-256 hash of the input IR (Intermediate Representation) string.
+     *
+     * This function computes the SHA-256 hash of a given string representing an
+     * Intermediate Representation (IR) to create a unique identifier for the IR.
+     * This can be useful for detecting changes in the IR or for comparing two
+     * IR functions.
+     *
+     * @param irString The IR string to hash.
+     * @return A hexadecimal string representation of the SHA-256 hash.
+     */
     std::string hashIRString(const std::string &irString) {
         unsigned char hash[SHA256_DIGEST_LENGTH];
         SHA256((unsigned char*)irString.c_str(), irString.size(), hash);
@@ -151,63 +161,6 @@ namespace {
 
         output += ")";
         return output;
-    }
-
-    /**
-     * @brief Extracts variable names from a given line of code.
-     * 
-     * This function uses a regular expression to match variable names in the input line.
-     * Variable names must start with a letter or underscore and may contain letters, digits, or underscores.
-     * 
-     * @param line The input line of code from which to extract variable names.
-     * @return A vector of strings containing the variable names found in the line.
-     * 
-     * @example
-     * std::vector<std::string> vars = extractVariablesFromLine("int x = y + 10;");
-     * // vars will contain: ["int", "x", "y"]
-     */
-    std::vector<std::string> extractVariablesFromLine(const std::string &line) {
-        std::vector<std::string> variables;
-        std::regex var_regex(R"(\b([a-zA-Z_][a-zA-Z0-9_]*)\b)");
-        auto words_begin = std::sregex_iterator(line.begin(), line.end(), var_regex);
-        auto words_end = std::sregex_iterator();
-
-        for (std::sregex_iterator it = words_begin; it != words_end; ++it) {
-            std::smatch match = *it;
-            std::string var = match.str(1);
-            variables.push_back(var);
-        }
-        return variables;
-    }
-
-    /**
-     * @brief Normalizes commutative operations by ensuring operands are in alphabetical order.
-     * 
-     * This function scans a line of code for commutative operations (e.g., addition `+`)
-     * and reorders the operands so that the smaller (alphabetically) operand appears first.
-     * This helps to treat equivalent expressions like `a + b` and `b + a` as the same.
-     * 
-     * @param line The input line of code to normalize.
-     * @return A string with the normalized commutative operations.
-     * 
-     * @example
-     * std::string normalized = normalizeCommutativeOperations("y + x");
-     * // normalized will be: "x + y"
-     */
-    std::string normalizeCommutativeOperations(const std::string &line) {
-        std::regex add_regex(R"((\w+)\s*\+\s*(\w+))");
-        std::smatch match;
-        std::string normalizedLine = line;
-
-        while (std::regex_search(normalizedLine, match, add_regex)) {
-            std::string operand1 = match[1];
-            std::string operand2 = match[2];
-            if (operand1 > operand2) std::swap(operand1, operand2);
-            std::string replacement = operand1 + " + " + operand2;
-            normalizedLine = match.prefix().str() + replacement + match.suffix().str();
-        }
-
-        return normalizedLine;
     }
 
     /**
@@ -370,9 +323,6 @@ namespace {
                 detectRecursion(entry.first, visitedInGraph, callStack);
             }
         }
-
-
-
 
         /**
          * @brief Update the callGraph map
@@ -544,7 +494,6 @@ namespace {
                     std::set<std::string> callPath;
                     std::string functionName = function.getName().str();
 
-
                     // Begin section checking for recursion
 
                     // Clean the func names from the specialized part (we only look at template functions!)
@@ -577,6 +526,8 @@ namespace {
 
                     if (specialize) {
                         // Canonicalize the called function using MLIR's built-in canonicalizer
+                        // This optimizes and simplifies the IR by applying standard rewrite patterns, 
+                        // making the function more uniform and easier to compare.
                         func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
 
                         mlir::PassManager pm(function.getContext());
@@ -585,7 +536,7 @@ namespace {
                             throw std::runtime_error("Failed to canonicalize called function.");
                         }
 
-                        // Get the canonicalized IR as a string
+                        // Get the canonicalized IR as a string and split it into lines for comparison and duplicate detection
                         std::vector<std::string> canonicalIRLines = splitIntoLines(getIRString(specializedFunc));
 
                         canonicalIRLines.erase(canonicalIRLines.begin()); // First line includes the func name -> Not needed it changes the hash
@@ -595,7 +546,10 @@ namespace {
                         // Hash the canonicalized IR string
                         std::string hash = hashIRString(canonicalIR);
 
-                        // Check if this specialization already exists using the hash
+                        // Reuse existing specialization if a function with the same canonicalized IR exists.
+                        //
+                        // If the hash matches an existing function, we reuse it. If no match is found, 
+                        // we store the hash and the current specialization for future reuse.
                         if (hashToFuncMap.count(hash) && hashToFuncMap[hash].getName().str() != specializedFunc.getName().str()) {
                             // Reuse existing function
                             func::FuncOp existingFunc = hashToFuncMap[hash];
