@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <iostream>
 #include <regex>
+#include <uuid/uuid.h>
 #include <openssl/sha.h>
 
 using namespace mlir;
@@ -41,25 +42,34 @@ using namespace mlir;
 namespace {
     
     /**
-     * @brief Generates a SHA-256 hash of the input IR (Intermediate Representation) string.
+     * @brief Generates a SHA-512 hash of the input IR (Intermediate Representation) string.
      *
-     * This function computes the SHA-256 hash of a given string representing an
+     * This function computes the SHA-512 hash of a given string representing an
      * Intermediate Representation (IR) to create a unique identifier for the IR.
      * This can be useful for detecting changes in the IR or for comparing two
      * IR functions.
      *
      * @param irString The IR string to hash.
-     * @return A hexadecimal string representation of the SHA-256 hash.
+     * @return A hexadecimal string representation of the SHA-512 hash.
      */
     std::string hashIRString(const std::string &irString) {
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256((unsigned char*)irString.c_str(), irString.size(), hash);
+        unsigned char hash[SHA512_DIGEST_LENGTH];
+        SHA512((unsigned char*)irString.c_str(), irString.size(), hash);
 
         std::stringstream ss;
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        for (int i = 0; i < SHA512_DIGEST_LENGTH; ++i) {
             ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
         }
         return ss.str();
+    }
+
+    // Function to generate a UUID string
+    std::string generateUUID() {
+        uuid_t uuid;
+        uuid_generate(uuid);
+        char uuidStr[37];   // UUIDs are 36 characters + null terminator
+        uuid_unparse(uuid, uuidStr);
+        return std::string(uuidStr);
     }
 
     std::string getIRString(func::FuncOp funcOp) {
@@ -268,6 +278,9 @@ namespace {
         std::unordered_map<std::string, func::FuncOp> hashToFuncMap;
         std::map<func::FuncOp, std::vector<std::string>> IRRepresentations;
         // Can store all callOps in a list
+
+        // Map to track all functions that share the same base hash (including those with newHash)
+        std::unordered_map<std::string, std::vector<func::FuncOp>> baseHashMap;
         
         const DaphneUserConfig& userConfig;
         std::shared_ptr<spdlog::logger> logger;
@@ -404,7 +417,7 @@ namespace {
                     if(Operation * co = CompilerUtils::constantOfAnyType(v)) {
                         // Clone the constant operation into the function body.
                         Operation * coNew = co->clone();
-+                        builder.insert(coNew);
+                        builder.insert(coNew);
                         // Replace all uses of the corresponding block argument by the newly inserted constant.
                         specializedFuncBodyBlock.getArgument(i).replaceAllUsesWith(coNew->getResult(0));
                         // TODO We could even remove the corresponding function argument.
@@ -494,6 +507,7 @@ namespace {
                     std::set<std::string> callPath;
                     std::string functionName = function.getName().str();
 
+
                     // Begin section checking for recursion
 
                     // Clean the func names from the specialized part (we only look at template functions!)
@@ -526,8 +540,6 @@ namespace {
 
                     if (specialize) {
                         // Canonicalize the called function using MLIR's built-in canonicalizer
-                        // This optimizes and simplifies the IR by applying standard rewrite patterns, 
-                        // making the function more uniform and easier to compare.
                         func::FuncOp specializedFunc = createOrReuseSpecialization(callOp.getOperandTypes(), callOp.getOperands(), calledFunction, callOp.getLoc());
 
                         mlir::PassManager pm(function.getContext());
@@ -536,31 +548,57 @@ namespace {
                             throw std::runtime_error("Failed to canonicalize called function.");
                         }
 
-                        // Get the canonicalized IR as a string and split it into lines for comparison and duplicate detection
+                        // Get the canonicalized IR as a string
                         std::vector<std::string> canonicalIRLines = splitIntoLines(getIRString(specializedFunc));
 
-                        canonicalIRLines.erase(canonicalIRLines.begin()); // First line includes the func name -> Not needed it changes the hash
+                        // Only keep function signature, ignore name 
+                        size_t firstQuote = canonicalIRLines[0].find('"');
+                        if(firstQuote != std::string::npos) {
+                            size_t secondQuote = canonicalIRLines[0].find('"', firstQuote+1);
+                            if(secondQuote != std::string::npos) {
+                                canonicalIRLines[0] = canonicalIRLines[0].substr(secondQuote+1);
+                            }
+                        }
 
                         std::string canonicalIR = std::accumulate(canonicalIRLines.begin(), canonicalIRLines.end(), std::string());
 
-                        // Hash the canonicalized IR string
-                        std::string hash = hashIRString(canonicalIR);
+                        std::string baseHash = hashIRString(canonicalIR);
+                        std::string finalHash = baseHash;
+                        bool isDuplicate = false;
 
-                        // Reuse existing specialization if a function with the same canonicalized IR exists.
-                        //
-                        // If the hash matches an existing function, we reuse it. If no match is found, 
-                        // we store the hash and the current specialization for future reuse.
-                        if (hashToFuncMap.count(hash) && hashToFuncMap[hash].getName().str() != specializedFunc.getName().str()) {
-                            // Reuse existing function
-                            func::FuncOp existingFunc = hashToFuncMap[hash];
-                            callOp.setCalleeAttr(existingFunc.getSymNameAttr());
-                            if (fixResultTypes(callOp->getResults(), existingFunc.getFunctionType())) {
-                                inferTypesInFunction(function);
+                        // Check if the base hash already exists in baseHashMap
+                        if (baseHashMap.find(baseHash) != baseHashMap.end()) {
+                            // Iterate through functions that share the same base hash
+                            for (auto &existingFunc : baseHashMap[baseHash]) {
+                                std::vector<std::string> existingIRLines = IRRepresentations[existingFunc];
+                                std::string existingCanonicalIR = std::accumulate(existingIRLines.begin(), existingIRLines.end(), std::string());
+
+                                if (canonicalIR == existingCanonicalIR) {
+                                    // Functions are identical, reuse the existing one
+                                    callOp.setCalleeAttr(existingFunc.getSymNameAttr());
+                                    if (fixResultTypes(callOp->getResults(), existingFunc.getFunctionType())) {
+                                        inferTypesInFunction(function);
+                                    }
+                                    specializedFunc.erase();
+                                    functions.erase(specializedName);
+                                    called.insert(existingFunc);
+                                    isDuplicate = true;
+                                    break;
+                                }
                             }
-                            specializedFunc.erase();
-                            functions.erase(specializedName);
-                            called.insert(existingFunc);
+
+                            // If no identical function found, generate a UUID for a new unique hash
+                            if (!isDuplicate) {
+                                std::string uuid = generateUUID(); // Use UUID for uniqueness
+                                finalHash = baseHash + "_" + uuid;
+                            }
                         } else {
+                            // If the baseHash does not exist in baseHashMap, add the function directly
+                            finalHash = baseHash;  // No need for UUID as there's no collision
+                        }
+
+                        // If no duplicate found, store the new function with its unique hash
+                        if (!isDuplicate) {
                             callOp.setCalleeAttr(specializedFunc.getSymNameAttr());
                             if (fixResultTypes(callOp->getResults(), specializedFunc.getFunctionType())) {
                                 inferTypesInFunction(function);
@@ -568,8 +606,10 @@ namespace {
                             specializeCallsInFunction(specializedFunc);
                             called.insert(specializedFunc);
 
-                            // Store the hash and the canonicalized IR for future reuse
-                            hashToFuncMap[hash] = specializedFunc;
+                            // Store the function in both hashToFuncMap and baseHashMap
+                            hashToFuncMap[finalHash].push_back(specializedFunc);
+                            baseHashMap[baseHash].push_back(specializedFunc);
+                            IRRepresentations[specializedFunc] = canonicalIRLines;
                         }
                     } else {
                         functions.insert({calledFuncName, calledFunction});
